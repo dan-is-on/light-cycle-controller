@@ -1,0 +1,10 @@
+{
+  "domain": "light_cycle",
+  "name": "Light Cycle Controller",
+  "codeowners": ["@dan-is-on"],
+  "config_flow": true,
+  "documentation": "https://github.com/dan-is-on/light-cycle-controller",
+  "issue_tracker": "https://github.com/dan-is-on/light-cycle-controller/issues",
+  "iot_class": "local_push",
+  "version": "0.1.0"
+}

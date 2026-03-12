@@ -38,10 +38,18 @@ EVENT_ZHA_EVENT = "zha_event"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Light Cycle Controller from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     controller = LightCycleController(hass, entry)
     await controller.async_start()
     hass.data[DOMAIN][entry.entry_id] = controller
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle config entry updates (options/data) by reloading the entry."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -63,7 +71,7 @@ class LightCycleController:
         self.hass = hass
         self.entry = entry
 
-        data = entry.data
+        data: dict[str, Any] = {**entry.data, **entry.options}
 
         self._target_entity_id: str = data[CONF_TARGET_ENTITY_ID]
         self._remote_ieee: str = data[CONF_REMOTE_IEEE]

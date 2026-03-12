@@ -27,7 +27,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 2. **Select Zigbee remote (ZHA)**
    - Pick the ZHA device (button/remote)
 3. **Capture button press**
-   - Press the desired physical button once
+   - Click **Submit**, then press the desired physical button once
    - Integration stores a “signature” (device IEEE + endpoint + command; optionally cluster/args if needed)
 4. **Configure brightness steps**
    - Choose number of “On” steps (1–8)
@@ -65,6 +65,17 @@ This repository is intended to be HACS-compatible.
 3. Install, then restart Home Assistant
 4. Settings → Devices & Services → **Add Integration** → “Light Cycle Controller”
 
+## Editing an existing controller
+
+After setup, you can edit an entry (target light, ZHA device/button capture, and steps):
+
+1. Settings → Devices & Services → “Light Cycle Controller”
+2. Open the entry’s menu (⋮) → **Configure**
+
 ## License
 
 MIT — see `LICENSE`.
+
+## Release history
+
+See `CHANGELOG.md`.

@@ -17,11 +17,11 @@
           "device_id": "ZHA device"
         }
       },
-      "capture": {
-        "title": "Capture button press",
-        "description": "Press the desired physical button on {device}, then click Submit.",
-        "data": {}
-      },
+            "capture": {
+                "title": "Capture button press",
+                "description": "Click Submit, then press the desired physical button on {device}.",
+                "data": {}
+            },
       "steps_count": {
         "title": "Brightness steps",
         "description": "Off is always included as the first step. Choose how many \"On\" steps you want.",
@@ -52,10 +52,10 @@
         }
       }
     },
-    "error": {
-      "no_press": "No button press detected yet. Press the button, then try again.",
-      "not_zha_device": "The selected device is not a ZHA device.",
-      "invalid_event": "The captured event did not include enough data to identify the button.",
+        "error": {
+            "no_press": "No button press detected. Click Submit again, then press the button.",
+            "not_zha_device": "The selected device is not a ZHA device.",
+            "invalid_event": "The captured event did not include enough data to identify the button.",
       "invalid_step_count": "Choose a number of steps between 1 and 8.",
       "invalid_brightness": "Brightness must be between 1 and 100.",
       "label_required": "Label is required.",
@@ -63,6 +63,55 @@
     },
     "abort": {
       "already_configured": "This controller is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Edit controller",
+        "description": "Update the target light, button device, and brightness steps.",
+        "data": {
+          "target_entity_id": "Target light",
+          "remote_device_id": "ZHA device",
+          "recapture": "Recapture button press",
+          "on_steps": "Number of On steps"
+        }
+      },
+      "capture": {
+        "title": "Capture button press",
+        "description": "Click Submit, then press the desired physical button on {device}.",
+        "data": {}
+      },
+      "steps": {
+        "title": "Configure steps",
+        "description": "Define a label and brightness percentage for each On step.",
+        "data": {
+          "step_1_label": "Step 1 label",
+          "step_1_brightness_pct": "Step 1 brightness (%)",
+          "step_2_label": "Step 2 label",
+          "step_2_brightness_pct": "Step 2 brightness (%)",
+          "step_3_label": "Step 3 label",
+          "step_3_brightness_pct": "Step 3 brightness (%)",
+          "step_4_label": "Step 4 label",
+          "step_4_brightness_pct": "Step 4 brightness (%)",
+          "step_5_label": "Step 5 label",
+          "step_5_brightness_pct": "Step 5 brightness (%)",
+          "step_6_label": "Step 6 label",
+          "step_6_brightness_pct": "Step 6 brightness (%)",
+          "step_7_label": "Step 7 label",
+          "step_7_brightness_pct": "Step 7 brightness (%)",
+          "step_8_label": "Step 8 label",
+          "step_8_brightness_pct": "Step 8 brightness (%)"
+        }
+      }
+    },
+    "error": {
+      "no_press": "No button press detected. Click Submit again, then press the button.",
+      "not_zha_device": "The selected device is not a ZHA device.",
+      "invalid_event": "The captured event did not include enough data to identify the button.",
+      "invalid_step_count": "Choose a number of steps between 1 and 8.",
+      "invalid_brightness": "Brightness must be between 1 and 100.",
+      "label_required": "Label is required."
     }
   }
 }

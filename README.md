@@ -44,6 +44,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
   - Light turns Off → cycle state becomes Off
   - Light becomes `unavailable` → treated as Off for cycling
   - Light is On → choose the configured step whose brightness % is nearest to the current brightness
+    - If the entity does not report a brightness attribute, the controller keeps cycling using its last known step (sync is limited to Off vs On)
 
 ## Explicit non-goals (deferred)
 
@@ -64,6 +65,10 @@ This repository is intended to be HACS-compatible.
 2. Add this repo URL and select category **Integration**
 3. Install, then restart Home Assistant
 4. Settings → Devices & Services → **Add Integration** → “Light Cycle Controller”
+
+### Integration icon (“icon not available”)
+
+Home Assistant shows integration icons via the Brands system. Local brand images bundled with this integration require **Home Assistant Core 2026.3+**; on older versions you may still see “icon not available”.
 
 ### Version numbers in the update UI
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Improve cycling for lights that don’t report a brightness attribute.
+
 ## 0.1.3
 
 - Fixed “Configure” (options) flow crash on newer Home Assistant versions.

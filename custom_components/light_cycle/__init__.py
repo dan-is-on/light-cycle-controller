@@ -173,12 +173,12 @@ class LightCycleController:
 
         brightness = state.attributes.get(ATTR_BRIGHTNESS)
         if brightness is None:
-            return 1
+            return self._resolved_index if self._resolved_index > 0 else 1
 
         try:
             brightness_int = int(brightness)
         except (TypeError, ValueError):
-            return 1
+            return self._resolved_index if self._resolved_index > 0 else 1
 
         if brightness_int <= 0:
             return 0

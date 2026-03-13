@@ -54,10 +54,21 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         await hass.config_entries.async_reload(entry.entry_id)
         return
 
-    await controller.async_stop()
-    new_controller = LightCycleController(hass, entry)
-    await new_controller.async_start()
-    hass.data[DOMAIN][entry.entry_id] = new_controller
+    steps = entry.options.get(CONF_STEPS, entry.data.get(CONF_STEPS, []))
+    steps_len = len(steps) if isinstance(steps, list) else "?"
+    LOGGER.debug("Entry %s updated; restarting controller (steps=%s)", entry.entry_id, steps_len)
+
+    try:
+        await controller.async_stop()
+        new_controller = LightCycleController(hass, entry)
+        await new_controller.async_start()
+        hass.data[DOMAIN][entry.entry_id] = new_controller
+    except Exception:
+        LOGGER.exception(
+            "Failed restarting controller for entry %s; falling back to async_reload",
+            entry.entry_id,
+        )
+        await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -101,6 +112,8 @@ class LightCycleController:
         if self._unsub_zha is not None or self._unsub_state is not None:
             return
 
+        self._refresh_steps_from_entry()
+
         self._unsub_zha = self.hass.bus.async_listen(EVENT_ZHA_EVENT, self._on_zha_event)
         self._unsub_state = async_track_state_change_event(
             self.hass, [self._target_entity_id], self._on_state_change
@@ -118,6 +131,12 @@ class LightCycleController:
             self._remote_ieee,
             self._endpoint_id,
             self._command,
+        )
+        LOGGER.debug(
+            "Controller %s steps for %s: %s",
+            self.entry.entry_id,
+            self._target_entity_id,
+            [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._steps],
         )
 
     async def async_stop(self) -> None:
@@ -214,16 +233,38 @@ class LightCycleController:
 
         return best_step
 
+    def _merged_entry_data(self) -> dict[str, Any]:
+        """Return merged entry data+options from the latest in-memory entry."""
+        current_entry = self.hass.config_entries.async_get_entry(self.entry.entry_id)
+        if current_entry is None:
+            current_entry = self.entry
+        else:
+            self.entry = current_entry
+        return {**current_entry.data, **current_entry.options}
+
     def _refresh_steps_from_entry(self) -> None:
-        """Refresh step configuration from the config entry.
+        """Refresh step configuration from the latest config entry values.
 
         Options flow updates the config entry in-place; we keep the controller robust by
         re-reading steps on press/state changes (in addition to restart-on-update).
         """
-        data: dict[str, Any] = {**self.entry.data, **self.entry.options}
-        steps = data.get(CONF_STEPS)
+        data = self._merged_entry_data()
+        steps = data.get(CONF_STEPS, [])
         if isinstance(steps, list):
-            self._steps = list(steps)
+            new_steps = list(steps)
+            if new_steps != self._steps:
+                LOGGER.debug(
+                    "Refreshed steps for entry %s: %s -> %s",
+                    self.entry.entry_id,
+                    len(self._steps),
+                    len(new_steps),
+                )
+                LOGGER.debug(
+                    "New steps for %s: %s",
+                    self._target_entity_id,
+                    [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in new_steps],
+                )
+            self._steps = new_steps
 
     async def _async_handle_press(self) -> None:
         async with self._press_lock:
@@ -234,7 +275,9 @@ class LightCycleController:
 
             next_index = (current_index + 1) % (len(self._steps) + 1)
             LOGGER.debug(
-                "Press: %s current=%s next=%s steps=%s",
+                "Press: entry=%s title=%s target=%s current=%s next=%s steps=%s",
+                self.entry.entry_id,
+                self.entry.title,
                 self._target_entity_id,
                 current_index,
                 next_index,
@@ -257,12 +300,14 @@ class LightCycleController:
         step = self._steps[index - 1]
         brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
         brightness = round((brightness_pct / 100) * 255)
+        label = step.get("label")
 
         LOGGER.debug(
-            "Turning on %s to %s%% (brightness=%s)",
+            "Turning on %s to %s%% (brightness=%s label=%s)",
             self._target_entity_id,
             brightness_pct,
             brightness,
+            label,
         )
         await self.hass.services.async_call(
             LIGHT_DOMAIN,

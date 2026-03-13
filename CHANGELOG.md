@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Add extra debug logging to troubleshoot step edits not applying.
+- Refresh the controller’s step list from the latest config entry (so edits apply even if the entry object is stale).
+
 ## 0.1.5
 
 - Apply edited options immediately by restarting the controller on entry updates.

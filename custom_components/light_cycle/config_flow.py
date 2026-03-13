@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -36,6 +37,8 @@ from .const import (
 
 EVENT_ZHA_EVENT = "zha_event"
 CONF_RECAPTURE = "recapture"
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _step_label_key(step: int) -> str:
@@ -406,6 +409,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     errors["base"] = "invalid_step_count"
 
             if not errors:
+                LOGGER.debug(
+                    "Options init for entry %s: target=%s device=%s on_steps=%s recapture=%s",
+                    self._config_entry.entry_id,
+                    target_entity_id,
+                    remote_device_id,
+                    on_steps,
+                    recapture,
+                )
                 if remote_device_id != self._remote_device_id:
                     recapture = True
 
@@ -565,6 +576,12 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     CONF_ARGS: self._signature.args,
                     CONF_STEPS: steps,
                 }
+                LOGGER.debug(
+                    "Saving options for entry %s: steps=%s brightness=%s",
+                    self._config_entry.entry_id,
+                    len(steps),
+                    [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in steps],
+                )
                 return self.async_create_entry(title="", data=options)
 
         schema_dict: dict[Any, Any] = {}

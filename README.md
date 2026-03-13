@@ -78,6 +78,8 @@ If you see versions like `bc31cf4` in Home Assistant’s update dialog, that’s
 
 See `RELEASING.md` for the exact steps to make HACS show `0.1.x` versions.
 
+If you installed the integration from the `main` branch (dev install), HACS will continue showing SHAs until you reinstall/switch to a GitHub Release.
+
 ### Do I need to restart Home Assistant after updating?
 
 Yes — when HACS updates a custom integration’s Python code, Home Assistant needs a restart to load the new code. (Editing an entry via **Configure** does not require a restart.)
@@ -88,6 +90,17 @@ After setup, you can edit an entry (target light, ZHA device/button capture, and
 
 1. Settings → Devices & Services → “Light Cycle Controller”
 2. Open the entry’s menu (⋮) → **Configure**
+
+## Debugging
+
+Enable debug logging and reproduce a button press:
+
+1. Settings → System → Logs → ⋮ → **Configure logging**
+2. Add: `custom_components.light_cycle: debug`
+3. Edit an entry (e.g. change 2 → 3 steps), press the button once, then check logs for lines like:
+   - `Started controller ... (steps=...)`
+   - `Refreshed steps ...`
+   - `Press: ... steps=...`
 
 ## License
 

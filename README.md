@@ -68,11 +68,15 @@ This repository is intended to be HACS-compatible.
 
 ### Integration icon (“icon not available”)
 
-Home Assistant shows integration icons via the Brands system. Local brand images bundled with this integration require **Home Assistant Core 2026.3+**; on older versions you may still see “icon not available”.
+Home Assistant shows integration icons via the Brands system. This integration ships local brand images (including light/dark + @2x variants) and requires **Home Assistant Core 2026.3+**; on older versions you may still see “icon not available”.
+
+If you’re on 2026.3+ and still see the placeholder, restart Home Assistant after updating and hard-refresh your browser (the frontend can cache brand images).
 
 ### Version numbers in the update UI
 
 If you see versions like `bc31cf4` in Home Assistant’s update dialog, that’s a commit SHA. HACS uses **GitHub Releases** (not just tags) to determine semantic versions; without releases it falls back to commit SHAs.
+
+See `RELEASING.md` for the exact steps to make HACS show `0.1.x` versions.
 
 ### Do I need to restart Home Assistant after updating?
 

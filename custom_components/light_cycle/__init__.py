@@ -48,8 +48,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle config entry updates (options/data) by reloading the entry."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Handle config entry updates (options/data) by restarting the controller."""
+    controller: LightCycleController | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if controller is None:
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+
+    await controller.async_stop()
+    new_controller = LightCycleController(hass, entry)
+    await new_controller.async_start()
+    hass.data[DOMAIN][entry.entry_id] = new_controller
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -103,9 +111,10 @@ class LightCycleController:
         )
 
         LOGGER.debug(
-            "Started controller %s for %s (ieee=%s endpoint=%s command=%s)",
+            "Started controller %s for %s (steps=%s ieee=%s endpoint=%s command=%s)",
             self.entry.entry_id,
             self._target_entity_id,
+            len(self._steps),
             self._remote_ieee,
             self._endpoint_id,
             self._command,
@@ -123,6 +132,7 @@ class LightCycleController:
     @callback
     def _on_state_change(self, event: Event) -> None:
         new_state: State | None = event.data.get("new_state")
+        self._refresh_steps_from_entry()
         self._resolved_index = self._classify_state(new_state)
 
     @callback
@@ -173,12 +183,16 @@ class LightCycleController:
 
         brightness = state.attributes.get(ATTR_BRIGHTNESS)
         if brightness is None:
-            return self._resolved_index if self._resolved_index > 0 else 1
+            if self._resolved_index > 0:
+                return min(self._resolved_index, max(1, len(self._steps)))
+            return 1
 
         try:
             brightness_int = int(brightness)
         except (TypeError, ValueError):
-            return self._resolved_index if self._resolved_index > 0 else 1
+            if self._resolved_index > 0:
+                return min(self._resolved_index, max(1, len(self._steps)))
+            return 1
 
         if brightness_int <= 0:
             return 0
@@ -200,13 +214,32 @@ class LightCycleController:
 
         return best_step
 
+    def _refresh_steps_from_entry(self) -> None:
+        """Refresh step configuration from the config entry.
+
+        Options flow updates the config entry in-place; we keep the controller robust by
+        re-reading steps on press/state changes (in addition to restart-on-update).
+        """
+        data: dict[str, Any] = {**self.entry.data, **self.entry.options}
+        steps = data.get(CONF_STEPS)
+        if isinstance(steps, list):
+            self._steps = list(steps)
+
     async def _async_handle_press(self) -> None:
         async with self._press_lock:
+            self._refresh_steps_from_entry()
             state = self.hass.states.get(self._target_entity_id)
             current_index = self._classify_state(state)
             self._resolved_index = current_index
 
             next_index = (current_index + 1) % (len(self._steps) + 1)
+            LOGGER.debug(
+                "Press: %s current=%s next=%s steps=%s",
+                self._target_entity_id,
+                current_index,
+                next_index,
+                len(self._steps),
+            )
             await self._async_apply_index(next_index)
             self._resolved_index = next_index
 

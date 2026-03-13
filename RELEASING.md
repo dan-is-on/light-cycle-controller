@@ -13,3 +13,6 @@ HACS uses **GitHub Releases** to determine semantic versions. If there are no Gi
    - Release notes: paste the `CHANGELOG.md` section for that version
 
 After that, HACS should show `0.1.2` as the installed/latest version instead of a commit SHA.
+
+> Note: If you installed a **dev/branch** version in HACS, it may continue showing commit SHAs for that install.
+> Re-install from the Release (tag) once you’ve published GitHub Releases.

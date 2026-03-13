@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Apply edited options immediately by restarting the controller on entry updates.
+- Refresh steps from the config entry on press/state changes (so step edits take effect even if the controller wasn’t restarted).
+- Add debug logging for press handling (current/next step and step count).
+- Add light/dark + @2x brand image variants for more reliable icon rendering.
+
 ## 0.1.4
 
 - Improve cycling for lights that don’t report a brightness attribute.

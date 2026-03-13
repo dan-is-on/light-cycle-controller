@@ -366,7 +366,11 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
     """Handle options for an existing Light Cycle Controller entry."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
+        try:
+            super().__init__(config_entry)
+        except TypeError:
+            super().__init__()
+        self._config_entry = config_entry
 
         self._target_entity_id: str | None = _entry_value(
             config_entry, CONF_TARGET_ENTITY_ID, None
@@ -426,8 +430,8 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                             self._signature = None
                             return await self.async_step_capture()
 
-                        endpoint_id = _entry_value(self.config_entry, CONF_ENDPOINT_ID)
-                        command = _entry_value(self.config_entry, CONF_COMMAND)
+                        endpoint_id = _entry_value(self._config_entry, CONF_ENDPOINT_ID)
+                        command = _entry_value(self._config_entry, CONF_COMMAND)
                         if endpoint_id is None or command is None:
                             return await self.async_step_capture()
 
@@ -435,8 +439,8 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                             ieee=ieee,
                             endpoint_id=int(endpoint_id),
                             command=str(command),
-                            cluster_id=_entry_value(self.config_entry, CONF_CLUSTER_ID),
-                            args=_entry_value(self.config_entry, CONF_ARGS),
+                            cluster_id=_entry_value(self._config_entry, CONF_CLUSTER_ID),
+                            args=_entry_value(self._config_entry, CONF_ARGS),
                         )
                         return await self.async_step_steps()
 

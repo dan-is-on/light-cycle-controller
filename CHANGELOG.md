@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Fixed “Configure” (options) flow crash on newer Home Assistant versions.
+- Added `icon.png`/`logo.png` at the repo root for HACS UI.
+
 ## 0.1.2
 
-- Fixed “Configure” (options) flow crash in some Home Assistant versions.
 - Added local brand images for the integration UI.
 
 ## 0.1.1

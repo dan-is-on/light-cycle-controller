@@ -90,6 +90,17 @@ def _entry_value(entry: ConfigEntry, key: str, default: Any | None = None) -> An
     return entry.data.get(key, default)
 
 
+def _boolean_field() -> Any:
+    """Return a backwards-compatible boolean field for config flows."""
+    boolean_selector = getattr(selector, "BooleanSelector", None)
+    if boolean_selector is None:
+        return bool
+    try:
+        return boolean_selector()
+    except TypeError:
+        return bool
+
+
 class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Light Cycle Controller."""
 
@@ -357,8 +368,12 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
     def __init__(self, config_entry: ConfigEntry) -> None:
         self.config_entry = config_entry
 
-        self._target_entity_id: str = _entry_value(config_entry, CONF_TARGET_ENTITY_ID)
-        self._remote_device_id: str = _entry_value(config_entry, CONF_REMOTE_DEVICE_ID)
+        self._target_entity_id: str | None = _entry_value(
+            config_entry, CONF_TARGET_ENTITY_ID, None
+        )
+        self._remote_device_id: str | None = _entry_value(
+            config_entry, CONF_REMOTE_DEVICE_ID, None
+        )
 
         self._remote_device_name: str | None = None
         self._remote_ieee: str | None = None
@@ -411,28 +426,40 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                             self._signature = None
                             return await self.async_step_capture()
 
+                        endpoint_id = _entry_value(self.config_entry, CONF_ENDPOINT_ID)
+                        command = _entry_value(self.config_entry, CONF_COMMAND)
+                        if endpoint_id is None or command is None:
+                            return await self.async_step_capture()
+
                         self._signature = _ZhaButtonSignature(
                             ieee=ieee,
-                            endpoint_id=int(_entry_value(self.config_entry, CONF_ENDPOINT_ID)),
-                            command=str(_entry_value(self.config_entry, CONF_COMMAND)),
+                            endpoint_id=int(endpoint_id),
+                            command=str(command),
                             cluster_id=_entry_value(self.config_entry, CONF_CLUSTER_ID),
                             args=_entry_value(self.config_entry, CONF_ARGS),
                         )
                         return await self.async_step_steps()
 
+        target_key = (
+            vol.Required(CONF_TARGET_ENTITY_ID, default=self._target_entity_id)
+            if self._target_entity_id
+            else vol.Required(CONF_TARGET_ENTITY_ID)
+        )
+        device_key = (
+            vol.Required(CONF_REMOTE_DEVICE_ID, default=self._remote_device_id)
+            if self._remote_device_id
+            else vol.Required(CONF_REMOTE_DEVICE_ID)
+        )
+
         schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_TARGET_ENTITY_ID, default=self._target_entity_id
-                ): selector.EntitySelector(
+                target_key: selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=LIGHT_DOMAIN)
                 ),
-                vol.Required(
-                    CONF_REMOTE_DEVICE_ID, default=self._remote_device_id
-                ): selector.DeviceSelector(
+                device_key: selector.DeviceSelector(
                     selector.DeviceSelectorConfig(integration="zha")
                 ),
-                vol.Optional(CONF_RECAPTURE, default=False): selector.BooleanSelector(),
+                vol.Optional(CONF_RECAPTURE, default=False): _boolean_field(),
                 vol.Required(
                     CONF_ON_STEPS, default=len(self._existing_steps) or 3
                 ): selector.NumberSelector(

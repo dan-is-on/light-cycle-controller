@@ -65,6 +65,14 @@ This repository is intended to be HACS-compatible.
 3. Install, then restart Home Assistant
 4. Settings → Devices & Services → **Add Integration** → “Light Cycle Controller”
 
+### Version numbers in the update UI
+
+If you see versions like `bc31cf4` in Home Assistant’s update dialog, that’s a commit SHA. HACS uses **GitHub Releases** (not just tags) to determine semantic versions; without releases it falls back to commit SHAs.
+
+### Do I need to restart Home Assistant after updating?
+
+Yes — when HACS updates a custom integration’s Python code, Home Assistant needs a restart to load the new code. (Editing an entry via **Configure** does not require a restart.)
+
 ## Editing an existing controller
 
 After setup, you can edit an entry (target light, ZHA device/button capture, and steps):

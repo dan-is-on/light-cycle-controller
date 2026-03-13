@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Fixed “Configure” (options) flow crash in some Home Assistant versions.
+- Added local brand images for the integration UI.
+
 ## 0.1.1
 
 - Capture step UX: instruct “Submit, then press” and only start listening after Submit.

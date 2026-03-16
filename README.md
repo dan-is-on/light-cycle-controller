@@ -1,6 +1,6 @@
 # Light Cycle Controller (Home Assistant)
 
-Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** cycle a target `light.*` entity through a user-defined set of **discrete brightness steps** (Off → Low → Medium → High → Off), while staying in sync when the light is controlled elsewhere (UI, voice, wall switch).
+Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** cycle a target collection of `light.*` entities through a user-defined set of **discrete brightness steps** (Off → Low → Medium → High → Off), while staying in sync when the lights are controlled elsewhere (UI, voice, wall switch).
 
 - **Integration name:** Light Cycle Controller
 - **Domain:** `light_cycle`
@@ -11,7 +11,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 - **Setup wizard is the product:** create repeatable “cycle controllers” without hand-built helpers/automations.
 - **Per-instance configuration:**
   - Instance name
-  - Target `light.*` entity (single light or light group exposed as `light`)
+  - Target light collection (single lights and/or light groups exposed as `light`)
   - ZHA remote device + captured button signature from an actual press (`zha_event`)
   - Dynamic brightness steps: Off + N “On” steps (each step has a label + brightness %)
 - **Runtime behaviour:**
@@ -23,7 +23,10 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 
 1. **Instance basics**
    - Instance Name (e.g., “Dining Pendant Cycle”)
-   - Target Light entity (`light.*`)
+   - Target Lights (`light.*`, supports selecting multiple items including light groups)
+   - On first setup only: **Parallel service calls (integration-wide)** (default `6`)
+     - Why `6`: good speedup for medium/large collections without overwhelming common bridges/cloud APIs
+     - If you see intermittent failures or lag (especially Tuya throttling), reduce this value
 2. **Select Zigbee remote (ZHA)**
    - Pick the ZHA device (button/remote)
 3. **Capture button press**
@@ -39,13 +42,19 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 - **Cycle order:** Off → Step 1 → Step 2 → … → Off
 - **On press:** integration classifies the *current* light state, then advances one step and calls:
   - `light.turn_off` for Off
-  - `light.turn_on` with a converted brightness value (percent → 0–255) for On steps
+  - `light.turn_on` with both `brightness` (percent → 0–255) and `brightness_pct` for On steps
+  - Service dispatch prioritizes non-Tuya entities first and defers Tuya-backed entities, so local lights tend to respond sooner in mixed collections
 - **Sync rules (deterministic):**
   - Light turns Off → cycle state becomes Off
   - Light becomes `unavailable` → treated as Off for cycling
-  - Light is On → choose the configured step whose brightness % is nearest to the current brightness
-    - If the target is a **light group**, the controller classifies based on the member lights (mode vote) rather than relying on the group’s aggregated brightness attribute
+  - Compute average brightness across the expanded collection (including nested groups)
+    - `off` / `unavailable` / `unknown` contribute `0%`
+    - `on` with brightness contributes its converted `%`
+    - `on` without brightness falls back to the last resolved step
+  - Choose the configured step whose brightness % is nearest to that average
     - If the entity does not report a brightness attribute, the controller keeps cycling using its last known step (sync is limited to Off vs On)
+  - During a button-triggered apply, transient intermediate group states are briefly ignored so large groups don’t collapse the cycle back to fewer steps mid-update
+  - After apply, the controller re-expands the collection; if new lights appeared, it applies the same step to those added lights
 
 ## Explicit non-goals (deferred)
 
@@ -77,7 +86,7 @@ If you’re on 2026.3+ and still see the placeholder, restart Home Assistant aft
 
 If you see versions like `bc31cf4` in Home Assistant’s update dialog, that’s a commit SHA. HACS uses **GitHub Releases** (not just tags) to determine semantic versions; without releases it falls back to commit SHAs.
 
-See `RELEASING.md` for the exact steps to make HACS show `0.1.x` versions.
+This repo now auto-publishes GitHub Releases from `CHANGELOG.md` on pushes to `main` (see `RELEASING.md`).
 
 If you installed the integration from the `main` branch (dev install), HACS will continue showing SHAs until you reinstall/switch to a GitHub Release.
 
@@ -91,6 +100,11 @@ After setup, you can edit an entry (target light, ZHA device/button capture, and
 
 1. Settings → Devices & Services → “Light Cycle Controller”
 2. Open the entry’s menu (⋮) → **Configure**
+
+### Integration-wide performance setting
+
+You can update the integration-wide **Parallel service calls** value in that same Configure flow (first page, “Edit controller”).  
+This value applies to all `light_cycle` entries.
 
 ## Debugging
 

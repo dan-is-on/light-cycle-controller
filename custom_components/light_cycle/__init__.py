@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import Counter
 from typing import Any, Callable
 
@@ -19,6 +20,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import Event, HomeAssistant, State, callback
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
@@ -30,8 +32,10 @@ from .const import (
     CONF_STEP_BRIGHTNESS_PCT,
     CONF_STEPS,
     CONF_TARGET_ENTITY_ID,
+    CONF_TARGET_ENTITY_IDS,
     DOMAIN,
 )
+from .settings import async_get_settings, get_max_parallel_calls
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,10 +47,45 @@ DATA_SERVICES_REGISTERED = "services_registered"
 SERVICE_DUMP = "dump"
 
 
+def _coerce_target_entity_ids(data: dict[str, Any]) -> list[str]:
+    """Return de-duplicated target entity IDs from entry data/options."""
+    raw_targets = data.get(CONF_TARGET_ENTITY_IDS)
+    values: list[Any]
+    if isinstance(raw_targets, str):
+        values = [raw_targets]
+    elif isinstance(raw_targets, (list, tuple, set)):
+        values = list(raw_targets)
+    else:
+        values = []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        entity_id = raw.strip()
+        if not entity_id.startswith(f"{LIGHT_DOMAIN}."):
+            continue
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        normalized.append(entity_id)
+
+    if normalized:
+        return normalized
+
+    legacy_target = data.get(CONF_TARGET_ENTITY_ID)
+    if isinstance(legacy_target, str) and legacy_target.startswith(f"{LIGHT_DOMAIN}."):
+        return [legacy_target]
+
+    return []
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Light Cycle Controller from a config entry."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     controllers: dict[str, LightCycleController] = domain_data.setdefault(DATA_CONTROLLERS, {})
+    await async_get_settings(hass)
 
     if not domain_data.get(DATA_SERVICES_REGISTERED):
         async def _handle_dump(call) -> None:
@@ -92,17 +131,13 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         merged = controller._merged_entry_data()
         steps = merged.get(CONF_STEPS, [])
         steps_list = steps if isinstance(steps, list) else []
-        target_entity_id = merged.get(CONF_TARGET_ENTITY_ID)
-
-        target_state = hass.states.get(target_entity_id) if target_entity_id else None
+        target_entity_ids = _coerce_target_entity_ids(merged)
+        primary_target = target_entity_ids[0] if target_entity_ids else None
+        target_state = hass.states.get(primary_target) if primary_target else None
         target_state_str = None if target_state is None else target_state.state
-        target_brightness = (
-            None
-            if target_state is None
-            else target_state.attributes.get(ATTR_BRIGHTNESS)
-        )
+        target_brightness = None if target_state is None else target_state.attributes.get(ATTR_BRIGHTNESS)
         try:
-            classified = controller._classify_state(target_state)
+            classified = controller._classify_state()
         except Exception:
             classified = None
 
@@ -122,9 +157,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         except Exception:
             next_from_resolved = None
 
-        expanded_targets = (
-            controller._expanded_target_entity_ids() if target_entity_id else []
-        )
+        expanded_targets = controller._expanded_target_entity_ids()
         member_summary: dict[str, Any] | None = None
         if expanded_targets:
             votes: Counter[int] = Counter()
@@ -163,13 +196,14 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
                 "counts": dict(counts),
                 "step_votes": dict(votes),
                 "sample": sample,
+                "average_pct": round(getattr(controller, "_last_average_pct", 0.0), 2),
             }
 
         LOGGER.warning(
-            "Dump: entry=%s title=%s target=%s state=%s brightness=%s controller_steps=%s entry_steps=%s resolved=%s classified=%s next(resolved)=%s next(classified)=%s targets=%s",
+            "Dump: entry=%s title=%s targets=%s primary_state=%s primary_brightness=%s controller_steps=%s entry_steps=%s resolved=%s classified=%s next(resolved)=%s next(classified)=%s expanded_targets=%s average_pct=%.2f max_parallel_calls=%s",
             controller.entry.entry_id,
             (entry.title if entry is not None else controller.entry.title),
-            target_entity_id,
+            target_entity_ids,
             target_state_str,
             target_brightness,
             len(controller._steps),
@@ -179,6 +213,8 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
             next_from_resolved,
             next_from_classified,
             len(expanded_targets),
+            getattr(controller, "_last_average_pct", 0.0),
+            controller._max_parallel_calls(),
         )
         if member_summary is not None:
             LOGGER.warning(
@@ -244,7 +280,7 @@ class LightCycleController:
 
         data: dict[str, Any] = {**entry.data, **entry.options}
 
-        self._target_entity_id: str = data[CONF_TARGET_ENTITY_ID]
+        self._target_entity_ids: list[str] = _coerce_target_entity_ids(data)
         self._remote_ieee: str = data[CONF_REMOTE_IEEE]
         self._endpoint_id: int = int(data[CONF_ENDPOINT_ID])
         self._command: str = str(data[CONF_COMMAND])
@@ -252,33 +288,38 @@ class LightCycleController:
         self._args: list[Any] | None = data.get(CONF_ARGS)
 
         self._steps: list[dict[str, Any]] = list(data[CONF_STEPS])
+        self._expanded_targets_cache: list[str] = []
+        self._targets_cache_dirty: bool = True
+        self._watched_state_entity_ids: list[str] = []
+        self._is_tuya_cache: dict[str, bool] = {}
 
         self._unsub_zha: Callable[[], None] | None = None
         self._unsub_state: Callable[[], None] | None = None
 
         self._press_lock = asyncio.Lock()
         self._resolved_index: int = 0
+        self._ignore_state_changes_until: float = 0.0
+        self._last_average_pct: float = 0.0
+        self._last_sample_counts: dict[str, int] = {}
 
     async def async_start(self) -> None:
         """Start listening for button presses and light state changes."""
         if self._unsub_zha is not None or self._unsub_state is not None:
             return
 
+        self._refresh_targets_from_entry()
         self._refresh_steps_from_entry()
+        self._refresh_expanded_targets(force=True)
+        self._resubscribe_state_listener()
 
         self._unsub_zha = self.hass.bus.async_listen(EVENT_ZHA_EVENT, self._on_zha_event)
-        self._unsub_state = async_track_state_change_event(
-            self.hass, [self._target_entity_id], self._on_state_change
-        )
-
-        self._resolved_index = self._classify_state(
-            self.hass.states.get(self._target_entity_id)
-        )
+        self._resolved_index = self._classify_state()
 
         LOGGER.info(
-            "Started controller %s for %s (steps=%s ieee=%s endpoint=%s command=%s)",
+            "Started controller %s for %s (expanded=%s steps=%s ieee=%s endpoint=%s command=%s)",
             self.entry.entry_id,
-            self._target_entity_id,
+            self._target_entity_ids,
+            len(self._expanded_targets_cache),
             len(self._steps),
             self._remote_ieee,
             self._endpoint_id,
@@ -287,7 +328,7 @@ class LightCycleController:
         LOGGER.info(
             "Controller %s steps for %s: %s",
             self.entry.entry_id,
-            self._target_entity_id,
+            self._target_entity_ids,
             [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._steps],
         )
 
@@ -302,7 +343,16 @@ class LightCycleController:
 
     @callback
     def _on_state_change(self, event: Event) -> None:
+        if time.monotonic() < self._ignore_state_changes_until:
+            return
+
+        old_state: State | None = event.data.get("old_state")
         new_state: State | None = event.data.get("new_state")
+
+        if self._group_membership_changed(old_state, new_state):
+            self._targets_cache_dirty = True
+
+        self._refresh_targets_from_entry()
         self._refresh_steps_from_entry()
         self._resolved_index = self._classify_state(new_state)
 
@@ -338,11 +388,42 @@ class LightCycleController:
 
         return True
 
-    def _classify_state(self, state: State | None) -> int:
-        """Return current cycle index derived from the light's state.
+    def _classify_state(self, _state: State | None = None) -> int:
+        """Classify cycle index from averaged brightness across the collection."""
+        expanded = self._cached_expanded_target_entity_ids()
+        return self._classify_expanded_members(expanded)
 
-        Index 0 is Off; 1..N are the configured On steps.
-        """
+    def _classify_expanded_members(self, entity_ids: list[str]) -> int:
+        average_pct, counts = self._average_collection_brightness_pct(entity_ids)
+        self._last_average_pct = average_pct
+        self._last_sample_counts = counts
+        return self._classify_average_pct(average_pct)
+
+    def _average_collection_brightness_pct(self, entity_ids: list[str]) -> tuple[float, dict[str, int]]:
+        if not entity_ids:
+            return 0.0, {"empty_collection": 1}
+
+        samples: list[int] = []
+        counts: Counter[str] = Counter()
+        for entity_id in entity_ids:
+            state = self.hass.states.get(entity_id)
+            sample_pct = self._sample_pct_for_state(state)
+            samples.append(sample_pct)
+
+            if state is None:
+                counts["missing"] += 1
+            else:
+                counts[f"state_{state.state}"] += 1
+                if state.state == STATE_ON and state.attributes.get(ATTR_BRIGHTNESS) is None:
+                    counts["on_no_brightness"] += 1
+
+        if not samples:
+            return 0.0, dict(counts)
+
+        average_pct = sum(samples) / len(samples)
+        return average_pct, dict(counts)
+
+    def _sample_pct_for_state(self, state: State | None) -> int:
         if state is None:
             return 0
 
@@ -352,105 +433,19 @@ class LightCycleController:
         if state.state != STATE_ON:
             return 0
 
-        # For light groups (and some integrations that expose a member `entity_id` list),
-        # determine the current step based on member states rather than the aggregated
-        # group brightness. This avoids common cases where group brightness is `None` or
-        # reflects an outlier member.
-        members = state.attributes.get(ATTR_ENTITY_ID)
-        if isinstance(members, list) and members:
-            expanded = self._expanded_entity_ids(state.entity_id)
-            return self._classify_expanded_members(expanded)
+        brightness_pct = self._brightness_pct_from_state(state)
+        if brightness_pct is not None:
+            return brightness_pct
 
-        brightness = state.attributes.get(ATTR_BRIGHTNESS)
-        if brightness is None:
-            if self._resolved_index > 0:
-                return min(self._resolved_index, max(1, len(self._steps)))
-            return 1
+        # Some platforms report ON but no brightness; keep progression stable.
+        fallback_index = self._resolved_index if self._resolved_index > 0 else 1
+        return self._step_pct(fallback_index)
 
-        try:
-            brightness_int = int(brightness)
-        except (TypeError, ValueError):
-            if self._resolved_index > 0:
-                return min(self._resolved_index, max(1, len(self._steps)))
-            return 1
-
-        if brightness_int <= 0:
+    def _classify_average_pct(self, average_pct: float) -> int:
+        if average_pct <= 0:
             return 0
 
-        brightness_pct = round((brightness_int / 255) * 100)
-        best_step: int = 1
-        best_delta: int = 999
-
-        for step_num, step in enumerate(self._steps, start=1):
-            try:
-                step_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
-            except (KeyError, TypeError, ValueError):
-                continue
-
-            delta = abs(step_pct - brightness_pct)
-            if delta < best_delta:
-                best_delta = delta
-                best_step = step_num
-
-        return best_step
-
-    def _classify_expanded_members(self, entity_ids: list[str]) -> int:
-        any_on = False
-        on_step_votes: list[int] = []
-
-        for entity_id in entity_ids:
-            if not isinstance(entity_id, str) or not entity_id.startswith("light."):
-                continue
-
-            member_state = self.hass.states.get(entity_id)
-            if member_state is None:
-                continue
-
-            if member_state.state in (STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN):
-                continue
-
-            if member_state.state != STATE_ON:
-                continue
-
-            any_on = True
-            brightness_pct = self._brightness_pct_from_state(member_state)
-            if brightness_pct is None:
-                continue
-
-            on_step_votes.append(self._nearest_step_for_pct(brightness_pct))
-
-        if not any_on:
-            # The parent entity is ON (we only call this when the configured/parent
-            # entity is ON). If we can't find any ON member states (e.g. states not
-            # loaded yet), fall back to the last resolved index.
-            if self._resolved_index > 0:
-                return min(self._resolved_index, max(1, len(self._steps)))
-            return 1
-
-        if not on_step_votes:
-            if self._resolved_index > 0:
-                return min(self._resolved_index, max(1, len(self._steps)))
-            return 1
-
-        counts = Counter(on_step_votes)
-        top = counts.most_common()
-        if not top:
-            return 1
-
-        best_count = top[0][1]
-        tied = [idx for idx, count in top if count == best_count]
-        if len(tied) == 1:
-            return tied[0]
-
-        if self._resolved_index in tied:
-            return int(self._resolved_index)
-
-        if self._resolved_index > 0:
-            resolved = int(self._resolved_index)
-            tied.sort(key=lambda idx: abs(idx - resolved))
-            return tied[0]
-
-        return min(tied)
+        return self._nearest_step_for_pct(round(average_pct))
 
     @staticmethod
     def _brightness_pct_from_state(state: State) -> int | None:
@@ -482,6 +477,14 @@ class LightCycleController:
 
         return best_step
 
+    def _step_pct(self, index: int) -> int:
+        if index <= 0:
+            return 0
+        try:
+            return int(self._steps[index - 1][CONF_STEP_BRIGHTNESS_PCT])
+        except (IndexError, KeyError, TypeError, ValueError):
+            return 100
+
     def _merged_entry_data(self) -> dict[str, Any]:
         """Return merged entry data+options from the latest in-memory entry."""
         current_entry = self.hass.config_entries.async_get_entry(self.entry.entry_id)
@@ -510,52 +513,116 @@ class LightCycleController:
                 )
                 LOGGER.info(
                     "New steps for %s: %s",
-                    self._target_entity_id,
+                    self._target_entity_ids,
                     [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in new_steps],
                 )
             self._steps = new_steps
             if self._resolved_index > len(self._steps):
                 self._resolved_index = len(self._steps)
 
+    def _refresh_targets_from_entry(self) -> None:
+        data = self._merged_entry_data()
+        targets = _coerce_target_entity_ids(data)
+        if not targets:
+            return
+        if targets != self._target_entity_ids:
+            LOGGER.info(
+                "Refreshed targets for entry %s: %s -> %s",
+                self.entry.entry_id,
+                self._target_entity_ids,
+                targets,
+            )
+            self._target_entity_ids = targets
+            self._targets_cache_dirty = True
+
+    def _group_membership_changed(self, old_state: State | None, new_state: State | None) -> bool:
+        if old_state is None and new_state is None:
+            return False
+        old_members = None if old_state is None else old_state.attributes.get(ATTR_ENTITY_ID)
+        new_members = None if new_state is None else new_state.attributes.get(ATTR_ENTITY_ID)
+        if isinstance(old_members, list) or isinstance(new_members, list):
+            return list(old_members or []) != list(new_members or [])
+        return False
+
+    def _state_subscription_entities(self) -> list[str]:
+        combined = self._target_entity_ids + self._expanded_targets_cache
+        unique: list[str] = []
+        seen: set[str] = set()
+        for entity_id in combined:
+            if entity_id in seen:
+                continue
+            seen.add(entity_id)
+            unique.append(entity_id)
+        return unique
+
+    def _resubscribe_state_listener(self) -> None:
+        watch_entities = self._state_subscription_entities()
+        if not watch_entities:
+            return
+        if self._unsub_state is not None and watch_entities == self._watched_state_entity_ids:
+            return
+
+        if self._unsub_state is not None:
+            self._unsub_state()
+            self._unsub_state = None
+
+        self._unsub_state = async_track_state_change_event(
+            self.hass,
+            watch_entities,
+            self._on_state_change,
+        )
+        self._watched_state_entity_ids = watch_entities
+
     async def _async_handle_press(self) -> None:
         async with self._press_lock:
+            self._refresh_targets_from_entry()
             self._refresh_steps_from_entry()
-            state = self.hass.states.get(self._target_entity_id)
-            current_index = self._classify_state(state)
+
+            expanded_before = self._cached_expanded_target_entity_ids()
+            current_index = self._classify_expanded_members(expanded_before)
             self._resolved_index = current_index
+
+            target_count = len(expanded_before)
+            settle_seconds = max(1.5, min(8.0, target_count * 0.08))
+            self._ignore_state_changes_until = time.monotonic() + settle_seconds
 
             next_index = (current_index + 1) % (len(self._steps) + 1)
             LOGGER.debug(
-                "Press: entry=%s title=%s target=%s current=%s next=%s steps=%s",
+                "Press: entry=%s title=%s targets=%s current=%s next=%s steps=%s avg=%.2f",
                 self.entry.entry_id,
                 self.entry.title,
-                self._target_entity_id,
+                self._target_entity_ids,
                 current_index,
                 next_index,
                 len(self._steps),
+                self._last_average_pct,
             )
             try:
-                await self._async_apply_index(next_index)
+                await self._async_apply_index(next_index, expanded_before)
             except Exception:
+                self._ignore_state_changes_until = 0.0
                 LOGGER.exception(
-                    "Failed applying cycle step (entry=%s title=%s target=%s next=%s steps=%s)",
+                    "Failed applying cycle step (entry=%s title=%s targets=%s next=%s steps=%s)",
                     self.entry.entry_id,
                     self.entry.title,
-                    self._target_entity_id,
+                    self._target_entity_ids,
                     next_index,
                     len(self._steps),
                 )
                 return
             else:
                 self._resolved_index = next_index
+                await self._async_reconcile_expanded_targets(next_index, expanded_before)
+                self._ignore_state_changes_until = max(
+                    self._ignore_state_changes_until,
+                    time.monotonic() + 0.5,
+                )
 
-    async def _async_apply_index(self, index: int) -> None:
-        target_entity_ids = self._expanded_target_entity_ids()
-
+    async def _async_apply_index(self, index: int, expanded_before: list[str]) -> None:
         if index == 0:
-            LOGGER.debug("Turning off %s", self._target_entity_id)
-            await self._async_call_light_service_best_effort(
-                "turn_off", target_entity_ids, {}
+            LOGGER.debug("Turning off %s", self._target_entity_ids)
+            await self._async_call_light_service(
+                "turn_off", {}, expanded_before
             )
             return
 
@@ -566,13 +633,83 @@ class LightCycleController:
 
         LOGGER.debug(
             "Turning on %s to %s%% (brightness=%s label=%s)",
-            self._target_entity_id,
+            self._target_entity_ids,
             brightness_pct,
             brightness,
             label,
         )
+        await self._async_call_light_service(
+            "turn_on",
+            {
+                ATTR_BRIGHTNESS: brightness,
+                "brightness_pct": brightness_pct,
+            },
+            expanded_before,
+        )
+
+    async def _async_reconcile_expanded_targets(
+        self, applied_index: int, previous_targets: list[str]
+    ) -> None:
+        refreshed_targets, changed = self._refresh_expanded_targets(force=True)
+        if changed:
+            self._resubscribe_state_listener()
+
+        previous_set = set(previous_targets)
+        added_targets = [entity_id for entity_id in refreshed_targets if entity_id not in previous_set]
+        if not added_targets:
+            return
+
+        LOGGER.info(
+            "Expanded target collection changed for entry %s; added=%s total=%s",
+            self.entry.entry_id,
+            len(added_targets),
+            len(refreshed_targets),
+        )
+        if applied_index == 0:
+            await self._async_call_light_service_best_effort("turn_off", added_targets, {})
+            return
+
+        step = self._steps[applied_index - 1]
+        brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
+        brightness = round((brightness_pct / 100) * 255)
         await self._async_call_light_service_best_effort(
-            "turn_on", target_entity_ids, {ATTR_BRIGHTNESS: brightness}
+            "turn_on",
+            added_targets,
+            {ATTR_BRIGHTNESS: brightness, "brightness_pct": brightness_pct},
+        )
+
+    async def _async_call_light_service(
+        self,
+        service: str,
+        service_data: dict[str, Any],
+        fallback_targets: list[str],
+    ) -> None:
+        """Prefer calling the configured target, then fall back to expanded members.
+
+        Calling the parent group first gives Home Assistant/integration-specific light
+        platforms a chance to apply a consistent grouped brightness. If that fails, we
+        retry best-effort over flattened member entities.
+        """
+        failures = await self._async_call_light_service_many(
+            service, self._target_entity_ids, service_data
+        )
+
+        if not failures:
+            return
+
+        for entity_id, exc in failures:
+            LOGGER.warning(
+                "light.%s failed for %s: %s; retrying expanded targets",
+                service,
+                entity_id,
+                exc,
+            )
+
+        if not fallback_targets:
+            raise failures[0][1]
+
+        await self._async_call_light_service_best_effort(
+            service, fallback_targets, service_data
         )
 
     def _expanded_target_entity_ids(self) -> list[str]:
@@ -582,12 +719,33 @@ class LightCycleController:
         de-duplicate entities. This avoids calling other group entities (which can hide
         partial failures and skew brightness classification).
         """
-        return self._expanded_entity_ids(self._target_entity_id)
+        expanded_targets, changed = self._refresh_expanded_targets(force=False)
+        if changed:
+            self._resubscribe_state_listener()
+        return expanded_targets
 
-    def _expanded_entity_ids(self, root_entity_id: str) -> list[str]:
+    def _cached_expanded_target_entity_ids(self) -> list[str]:
+        if self._expanded_targets_cache:
+            return list(self._expanded_targets_cache)
+
+        expanded_targets, _ = self._refresh_expanded_targets(force=True)
+        self._resubscribe_state_listener()
+        return expanded_targets
+
+    def _refresh_expanded_targets(self, force: bool) -> tuple[list[str], bool]:
+        if not force and self._expanded_targets_cache and not self._targets_cache_dirty:
+            return list(self._expanded_targets_cache), False
+
+        expanded = self._expanded_entity_ids(self._target_entity_ids)
+        changed = expanded != self._expanded_targets_cache
+        self._expanded_targets_cache = expanded
+        self._targets_cache_dirty = False
+        return list(self._expanded_targets_cache), changed
+
+    def _expanded_entity_ids(self, root_entity_ids: list[str]) -> list[str]:
         visited: set[str] = set()
         leaves: list[str] = []
-        stack: list[str] = [root_entity_id]
+        stack: list[str] = list(root_entity_ids)
 
         while stack:
             entity_id = stack.pop()
@@ -617,7 +775,7 @@ class LightCycleController:
             seen.add(entity_id)
             unique.append(entity_id)
 
-        return unique or [root_entity_id]
+        return unique or list(root_entity_ids)
 
     async def _async_call_light_service_best_effort(
         self,
@@ -625,14 +783,9 @@ class LightCycleController:
         entity_ids: list[str],
         service_data: dict[str, Any],
     ) -> None:
-        failures: list[tuple[str, Exception]] = []
-        for entity_id in entity_ids:
-            exc = await self._async_call_light_service_single(
-                service, entity_id, service_data
-            )
-            if exc is None:
-                continue
-            failures.append((entity_id, exc))
+        failures = await self._async_call_light_service_many(
+            service, entity_ids, service_data
+        )
 
         if not failures:
             return
@@ -658,3 +811,82 @@ class LightCycleController:
         except Exception as exc:
             return exc
         return None
+
+    async def _async_call_light_service_many(
+        self, service: str, entity_ids: list[str], service_data: dict[str, Any]
+    ) -> list[tuple[str, Exception]]:
+        if not entity_ids:
+            return []
+
+        ordered_entity_ids = self._ordered_entity_ids_for_dispatch(entity_ids)
+        max_parallel_calls = self._max_parallel_calls()
+        if max_parallel_calls <= 1 or len(ordered_entity_ids) == 1:
+            failures: list[tuple[str, Exception]] = []
+            for entity_id in ordered_entity_ids:
+                exc = await self._async_call_light_service_single(
+                    service, entity_id, service_data
+                )
+                if exc is not None:
+                    failures.append((entity_id, exc))
+            return failures
+
+        semaphore = asyncio.Semaphore(max_parallel_calls)
+
+        async def _call(entity_id: str) -> tuple[str, Exception | None]:
+            async with semaphore:
+                exc = await self._async_call_light_service_single(
+                    service, entity_id, service_data
+                )
+            return entity_id, exc
+
+        results = await asyncio.gather(*[_call(entity_id) for entity_id in ordered_entity_ids])
+        return [(entity_id, exc) for entity_id, exc in results if exc is not None]
+
+    def _max_parallel_calls(self) -> int:
+        return get_max_parallel_calls(self.hass)
+
+    def _ordered_entity_ids_for_dispatch(self, entity_ids: list[str]) -> list[str]:
+        """Prioritize fast/local entities first and defer Tuya-backed entities."""
+        if len(entity_ids) <= 1:
+            return list(entity_ids)
+
+        normal_entities: list[str] = []
+        tuya_entities: list[str] = []
+        for entity_id in entity_ids:
+            if self._is_tuya_entity(entity_id):
+                tuya_entities.append(entity_id)
+            else:
+                normal_entities.append(entity_id)
+
+        if not tuya_entities or not normal_entities:
+            return list(entity_ids)
+
+        LOGGER.debug(
+            "Dispatch order for entry %s: local/non-Tuya=%s Tuya=%s",
+            self.entry.entry_id,
+            len(normal_entities),
+            len(tuya_entities),
+        )
+        return normal_entities + tuya_entities
+
+    def _is_tuya_entity(self, entity_id: str) -> bool:
+        cached = self._is_tuya_cache.get(entity_id)
+        if cached is not None:
+            return cached
+
+        is_tuya = False
+        entity_registry = er.async_get(self.hass)
+        entity_entry = entity_registry.async_get(entity_id)
+        if entity_entry is not None:
+            platform = (entity_entry.platform or "").lower()
+            is_tuya = platform in {"tuya", "localtuya", "tuya_local"}
+            if not is_tuya and entity_entry.device_id:
+                device_registry = dr.async_get(self.hass)
+                device_entry = device_registry.async_get(entity_entry.device_id)
+                if device_entry is not None:
+                    manufacturer = (device_entry.manufacturer or "").lower()
+                    model = (device_entry.model or "").lower()
+                    is_tuya = "tuya" in manufacturer or model.startswith("tuya")
+
+        self._is_tuya_cache[entity_id] = is_tuya
+        return is_tuya

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections import Counter
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.redact import async_redact_data
 
-from .const import CONF_REMOTE_IEEE, CONF_TARGET_ENTITY_ID, DOMAIN
+from .const import CONF_REMOTE_IEEE, CONF_TARGET_ENTITY_ID, CONF_TARGET_ENTITY_IDS, DOMAIN
+from .settings import get_max_parallel_calls
 
 _TO_REDACT = {CONF_REMOTE_IEEE}
 
@@ -18,9 +20,25 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    target_entity_id = entry.options.get(
-        CONF_TARGET_ENTITY_ID, entry.data.get(CONF_TARGET_ENTITY_ID)
+    raw_targets = entry.options.get(
+        CONF_TARGET_ENTITY_IDS, entry.data.get(CONF_TARGET_ENTITY_IDS)
     )
+    target_entity_ids = []
+    if isinstance(raw_targets, str):
+        target_entity_ids = [raw_targets]
+    elif isinstance(raw_targets, list):
+        target_entity_ids = [value for value in raw_targets if isinstance(value, str)]
+    elif isinstance(raw_targets, tuple):
+        target_entity_ids = [value for value in raw_targets if isinstance(value, str)]
+
+    if not target_entity_ids:
+        legacy_target = entry.options.get(
+            CONF_TARGET_ENTITY_ID, entry.data.get(CONF_TARGET_ENTITY_ID)
+        )
+        if isinstance(legacy_target, str):
+            target_entity_ids = [legacy_target]
+
+    target_entity_id = target_entity_ids[0] if target_entity_ids else None
     target_state = hass.states.get(target_entity_id) if target_entity_id else None
 
     controllers: dict[str, Any] = hass.data.get(DOMAIN, {}).get("controllers", {})
@@ -32,7 +50,7 @@ async def async_get_config_entry_diagnostics(
     member_summary: dict[str, Any] | None = None
     if controller is not None:
         try:
-            classified_index = controller._classify_state(target_state)
+            classified_index = controller._classify_state()
         except Exception:
             classified_index = None
 
@@ -81,6 +99,7 @@ async def async_get_config_entry_diagnostics(
             "options": async_redact_data(entry.options, _TO_REDACT),
         },
         "target": {
+            "entity_ids": target_entity_ids,
             "entity_id": target_entity_id,
             "state": None if target_state is None else target_state.state,
             "brightness": None
@@ -102,6 +121,13 @@ async def async_get_config_entry_diagnostics(
             "steps": getattr(controller, "_steps", None),
             "expanded_targets": expanded_targets,
             "member_summary": member_summary,
+            "average_pct": getattr(controller, "_last_average_pct", None),
+            "sample_counts": getattr(controller, "_last_sample_counts", None),
+            "max_parallel_calls": get_max_parallel_calls(hass),
+            "state_sync_suppressed": bool(
+                time.monotonic()
+                < float(getattr(controller, "_ignore_state_changes_until", 0.0))
+            ),
         }
 
     return data

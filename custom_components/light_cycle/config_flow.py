@@ -22,6 +22,7 @@ from .const import (
     CONF_CLUSTER_ID,
     CONF_COMMAND,
     CONF_ENDPOINT_ID,
+    CONF_MAX_PARALLEL_CALLS,
     CONF_ON_STEPS,
     CONF_REMOTE_DEVICE_ID,
     CONF_REMOTE_IEEE,
@@ -29,11 +30,16 @@ from .const import (
     CONF_STEP_LABEL,
     CONF_STEPS,
     CONF_TARGET_ENTITY_ID,
+    CONF_TARGET_ENTITY_IDS,
     DEFAULT_CAPTURE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_PARALLEL_CALLS,
     DOMAIN,
     MAX_ON_STEPS,
+    MAX_MAX_PARALLEL_CALLS,
+    MIN_MAX_PARALLEL_CALLS,
     MIN_ON_STEPS,
 )
+from .settings import async_get_settings, async_set_max_parallel_calls
 
 EVENT_ZHA_EVENT = "zha_event"
 CONF_RECAPTURE = "recapture"
@@ -93,6 +99,61 @@ def _entry_value(entry: ConfigEntry, key: str, default: Any | None = None) -> An
     return entry.data.get(key, default)
 
 
+def _normalize_target_entity_ids(value: Any) -> list[str]:
+    """Normalize selector output to a de-duplicated list of light entity IDs."""
+    values: list[Any]
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        entity_id = raw.strip()
+        if not entity_id.startswith(f"{LIGHT_DOMAIN}."):
+            continue
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        normalized.append(entity_id)
+    return normalized
+
+
+def _entry_target_entity_ids(entry: ConfigEntry) -> list[str]:
+    targets = _entry_value(entry, CONF_TARGET_ENTITY_IDS, None)
+    normalized = _normalize_target_entity_ids(targets)
+    if normalized:
+        return normalized
+
+    legacy_target = _entry_value(entry, CONF_TARGET_ENTITY_ID, None)
+    return _normalize_target_entity_ids(legacy_target)
+
+
+def _light_entity_selector(*, multiple: bool) -> selector.EntitySelector:
+    try:
+        config = selector.EntitySelectorConfig(domain=LIGHT_DOMAIN, multiple=multiple)
+    except TypeError:
+        config = selector.EntitySelectorConfig(domain=LIGHT_DOMAIN)
+    return selector.EntitySelector(config)
+
+
+def _max_parallel_calls_selector() -> selector.NumberSelector:
+    mode = getattr(selector.NumberSelectorMode, "BOX", selector.NumberSelectorMode.SLIDER)
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=MIN_MAX_PARALLEL_CALLS,
+            max=MAX_MAX_PARALLEL_CALLS,
+            step=1,
+            mode=mode,
+        )
+    )
+
+
 def _boolean_field() -> Any:
     """Return a backwards-compatible boolean field for config flows."""
     boolean_selector = getattr(selector, "BooleanSelector", None)
@@ -111,7 +172,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._instance_name: str | None = None
-        self._target_entity_id: str | None = None
+        self._target_entity_ids: list[str] = []
 
         self._remote_device_id: str | None = None
         self._remote_device_name: str | None = None
@@ -122,28 +183,66 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self._signature: _ZhaButtonSignature | None = None
         self._on_steps: int | None = None
+        self._pending_max_parallel_calls: int | None = None
 
     async def async_step_user(self, user_input: ConfigType | None = None):
         errors: dict[str, str] = {}
+        global_settings = await async_get_settings(self.hass)
+        default_max_parallel_calls = int(
+            global_settings.get(CONF_MAX_PARALLEL_CALLS, DEFAULT_MAX_PARALLEL_CALLS)
+        )
+        is_first_entry = len(self.hass.config_entries.async_entries(DOMAIN)) == 0
 
         if user_input is not None:
             name = user_input[CONF_NAME].strip()
+            target_entity_ids = _normalize_target_entity_ids(
+                user_input.get(CONF_TARGET_ENTITY_IDS)
+            )
+            max_parallel_calls = None
+            if is_first_entry:
+                try:
+                    max_parallel_calls = int(user_input[CONF_MAX_PARALLEL_CALLS])
+                except (TypeError, ValueError, KeyError):
+                    errors[CONF_MAX_PARALLEL_CALLS] = "invalid_max_parallel_calls"
+                else:
+                    if not (
+                        MIN_MAX_PARALLEL_CALLS
+                        <= max_parallel_calls
+                        <= MAX_MAX_PARALLEL_CALLS
+                    ):
+                        errors[CONF_MAX_PARALLEL_CALLS] = "invalid_max_parallel_calls"
+
             if not name:
                 errors[CONF_NAME] = "name_required"
+            elif not target_entity_ids:
+                errors[CONF_TARGET_ENTITY_IDS] = "target_required"
             else:
+                if is_first_entry and max_parallel_calls is not None:
+                    self._pending_max_parallel_calls = max_parallel_calls
                 self._instance_name = name
-                self._target_entity_id = user_input[CONF_TARGET_ENTITY_ID]
-                return await self.async_step_device()
+                self._target_entity_ids = target_entity_ids
+                if not errors:
+                    return await self.async_step_device()
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_NAME): selector.TextSelector(),
-                vol.Required(CONF_TARGET_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=LIGHT_DOMAIN)
-                ),
-            }
+        schema_dict: dict[Any, Any] = {
+            vol.Required(CONF_NAME): selector.TextSelector(),
+            vol.Required(CONF_TARGET_ENTITY_IDS): _light_entity_selector(multiple=True),
+        }
+        if is_first_entry:
+            schema_dict[
+                vol.Required(
+                    CONF_MAX_PARALLEL_CALLS, default=default_max_parallel_calls
+                )
+            ] = _max_parallel_calls_selector()
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={
+                "default_max_parallel_calls": str(default_max_parallel_calls)
+            },
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_device(self, user_input: ConfigType | None = None):
         errors: dict[str, str] = {}
@@ -307,20 +406,22 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 assert self._instance_name is not None
-                assert self._target_entity_id is not None
+                assert self._target_entity_ids
                 assert self._remote_device_id is not None
                 assert self._remote_ieee is not None
                 assert self._signature is not None
 
+                target_signature = ",".join(sorted(self._target_entity_ids))
                 unique_id = (
                     f"{self._remote_ieee}:{self._signature.endpoint_id}:{self._signature.command}"
-                    f":{self._target_entity_id}"
+                    f":{target_signature}"
                 )
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
 
                 data = {
-                    CONF_TARGET_ENTITY_ID: self._target_entity_id,
+                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
+                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
                     CONF_REMOTE_DEVICE_ID: self._remote_device_id,
                     CONF_REMOTE_IEEE: self._remote_ieee,
                     CONF_ENDPOINT_ID: self._signature.endpoint_id,
@@ -329,6 +430,10 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_ARGS: self._signature.args,
                     CONF_STEPS: steps,
                 }
+                if self._pending_max_parallel_calls is not None:
+                    await async_set_max_parallel_calls(
+                        self.hass, self._pending_max_parallel_calls
+                    )
                 return self.async_create_entry(title=self._instance_name, data=data)
 
         schema_dict: dict[Any, Any] = {}
@@ -375,9 +480,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             super().__init__()
         self._config_entry = config_entry
 
-        self._target_entity_id: str | None = _entry_value(
-            config_entry, CONF_TARGET_ENTITY_ID, None
-        )
+        self._target_entity_ids: list[str] = _entry_target_entity_ids(config_entry)
         self._remote_device_id: str | None = _entry_value(
             config_entry, CONF_REMOTE_DEVICE_ID, None
         )
@@ -387,6 +490,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
 
         self._signature: _ZhaButtonSignature | None = None
         self._on_steps: int | None = None
+        self._pending_max_parallel_calls: int | None = None
 
         self._existing_steps: list[dict[str, Any]] = list(
             _entry_value(config_entry, CONF_STEPS, [])
@@ -394,11 +498,29 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
 
     async def async_step_init(self, user_input: ConfigType | None = None):
         errors: dict[str, str] = {}
+        global_settings = await async_get_settings(self.hass)
+        default_max_parallel_calls = int(
+            global_settings.get(CONF_MAX_PARALLEL_CALLS, DEFAULT_MAX_PARALLEL_CALLS)
+        )
 
         if user_input is not None:
-            target_entity_id = user_input[CONF_TARGET_ENTITY_ID]
+            target_entity_ids = _normalize_target_entity_ids(
+                user_input.get(CONF_TARGET_ENTITY_IDS)
+            )
             remote_device_id = user_input[CONF_REMOTE_DEVICE_ID]
             recapture = bool(user_input.get(CONF_RECAPTURE, False))
+            try:
+                max_parallel_calls = int(user_input[CONF_MAX_PARALLEL_CALLS])
+            except (TypeError, ValueError, KeyError):
+                errors[CONF_MAX_PARALLEL_CALLS] = "invalid_max_parallel_calls"
+                max_parallel_calls = default_max_parallel_calls
+            else:
+                if not (
+                    MIN_MAX_PARALLEL_CALLS
+                    <= max_parallel_calls
+                    <= MAX_MAX_PARALLEL_CALLS
+                ):
+                    errors[CONF_MAX_PARALLEL_CALLS] = "invalid_max_parallel_calls"
 
             try:
                 on_steps = int(user_input[CONF_ON_STEPS])
@@ -409,13 +531,18 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     errors["base"] = "invalid_step_count"
 
             if not errors:
+                if not target_entity_ids:
+                    errors[CONF_TARGET_ENTITY_IDS] = "target_required"
+
+            if not errors:
                 LOGGER.info(
-                    "Options init for entry %s: target=%s device=%s on_steps=%s recapture=%s",
+                    "Options init for entry %s: targets=%s device=%s on_steps=%s recapture=%s max_parallel_calls=%s",
                     self._config_entry.entry_id,
-                    target_entity_id,
+                    target_entity_ids,
                     remote_device_id,
                     on_steps,
                     recapture,
+                    max_parallel_calls,
                 )
                 if remote_device_id != self._remote_device_id:
                     recapture = True
@@ -429,13 +556,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     if not ieee:
                         errors["base"] = "not_zha_device"
                     else:
-                        self._target_entity_id = target_entity_id
+                        self._target_entity_ids = target_entity_ids
                         self._remote_device_id = remote_device_id
                         self._remote_device_name = (
                             device_entry.name_by_user or device_entry.name
                         )
                         self._remote_ieee = ieee
                         self._on_steps = on_steps
+                        self._pending_max_parallel_calls = max_parallel_calls
 
                         if recapture:
                             self._signature = None
@@ -456,9 +584,9 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                         return await self.async_step_steps()
 
         target_key = (
-            vol.Required(CONF_TARGET_ENTITY_ID, default=self._target_entity_id)
-            if self._target_entity_id
-            else vol.Required(CONF_TARGET_ENTITY_ID)
+            vol.Required(CONF_TARGET_ENTITY_IDS, default=self._target_entity_ids)
+            if self._target_entity_ids
+            else vol.Required(CONF_TARGET_ENTITY_IDS)
         )
         device_key = (
             vol.Required(CONF_REMOTE_DEVICE_ID, default=self._remote_device_id)
@@ -468,13 +596,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
 
         schema = vol.Schema(
             {
-                target_key: selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=LIGHT_DOMAIN)
-                ),
+                target_key: _light_entity_selector(multiple=True),
                 device_key: selector.DeviceSelector(
                     selector.DeviceSelectorConfig(integration="zha")
                 ),
                 vol.Optional(CONF_RECAPTURE, default=False): _boolean_field(),
+                vol.Required(
+                    CONF_MAX_PARALLEL_CALLS, default=default_max_parallel_calls
+                ): _max_parallel_calls_selector(),
                 vol.Required(
                     CONF_ON_STEPS, default=len(self._existing_steps) or 3
                 ): selector.NumberSelector(
@@ -488,7 +617,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "default_max_parallel_calls": str(default_max_parallel_calls)
+            },
+        )
 
     async def async_step_capture(self, user_input: ConfigType | None = None):
         errors: dict[str, str] = {}
@@ -567,7 +703,8 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                 assert self._signature is not None
 
                 options = {
-                    CONF_TARGET_ENTITY_ID: self._target_entity_id,
+                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
+                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
                     CONF_REMOTE_DEVICE_ID: self._remote_device_id,
                     CONF_REMOTE_IEEE: self._remote_ieee,
                     CONF_ENDPOINT_ID: self._signature.endpoint_id,
@@ -576,6 +713,10 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     CONF_ARGS: self._signature.args,
                     CONF_STEPS: steps,
                 }
+                if self._pending_max_parallel_calls is not None:
+                    await async_set_max_parallel_calls(
+                        self.hass, self._pending_max_parallel_calls
+                    )
                 LOGGER.info(
                     "Saving options for entry %s: steps=%s brightness=%s",
                     self._config_entry.entry_id,

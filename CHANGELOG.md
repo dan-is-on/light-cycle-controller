@@ -1,11 +1,28 @@
 # Changelog
 
-## 0.1.8
+## 0.1.12
 
-- Reload the config entry when options are saved (more reliable edits + ensures old listeners are cleaned up).
-- Add `services.yaml` documentation for `light_cycle.dump`.
-- Add config entry diagnostics (downloadable from the integration entry) to capture active steps/controller state for debugging.
-- Update README debugging instructions for Home Assistant 2026.3+ (Developer Tools → Actions).
+- Add integration-wide `max_parallel_calls` setting (persisted in storage), asked during first entry setup and editable later in the entry Configure flow.
+- Apply light service calls with capped async fan-out (instead of strictly sequential calls) for better responsiveness on large collections.
+- Prioritize non-Tuya entities before Tuya-backed entities during service dispatch so mixed collections show faster visible response.
+- Keep collection expansion cached in memory for the press hot path; re-expand after apply and patch newly discovered lights to the same level.
+- Include concurrency and average collection metrics in dump/diagnostics for easier tuning and debugging.
+- Automate GitHub Releases from `CHANGELOG.md` on `main` pushes (tag + release creation when a new version heading appears).
+
+## 0.1.11
+
+- Add multi-target collections in config/options flow (select multiple lights and/or light groups for one controller entry).
+- Classify current step from the average brightness across the expanded collection (`off`/`unavailable`/`unknown` count as `0%`).
+- Cache expanded collection members in memory for fast button response; re-expand after each apply and patch newly added lights to the just-applied step.
+- Subscribe/unsubscribe state listeners for expanded collections so entry unload/remove stays clean.
+- Extend diagnostics and dump output with collection-level metrics (`average_pct`, expanded targets, and sync suppression status).
+
+## 0.1.10
+
+- Keep cycle progression deterministic during large group updates by temporarily suppressing transient state re-classification while a press is being applied.
+- Prefer applying `light.turn_on`/`light.turn_off` to the configured target first, then fall back to flattened member entities if the target call fails.
+- Send both `brightness` and `brightness_pct` on On steps for broader light platform compatibility.
+- Add a `state_sync_suppressed` flag to diagnostics so it’s obvious when transient state updates are being ignored after a press.
 
 ## 0.1.9
 
@@ -13,6 +30,13 @@
 - Fix `services.yaml` schema so the `light_cycle.dump` action loads cleanly.
 - Improve sync for light groups by classifying the current step from member states (mode vote) instead of relying on the group’s aggregated brightness.
 - Add expanded target + member vote summaries to config entry diagnostics to help troubleshoot “step count not applying” reports.
+
+## 0.1.8
+
+- Reload the config entry when options are saved (more reliable edits + ensures old listeners are cleaned up).
+- Add `services.yaml` documentation for `light_cycle.dump`.
+- Add config entry diagnostics (downloadable from the integration entry) to capture active steps/controller state for debugging.
+- Update README debugging instructions for Home Assistant 2026.3+ (Developer Tools → Actions).
 
 ## 0.1.7
 

@@ -2,16 +2,23 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+    paths:
+      - CHANGELOG.md
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.1.6)"
-        required: true
+        description: "Optional version override (e.g. 0.1.12). Leave blank to release the top CHANGELOG version."
+        required: false
+        default: ""
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -21,77 +28,93 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set release variables
-        id: vars
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="v${{ inputs.version }}"
-            version="${{ inputs.version }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-            version="${GITHUB_REF_NAME#v}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Create tag (manual runs only)
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git rev-parse -q --verify "refs/tags/${{ steps.vars.outputs.tag }}" >/dev/null; then
-            echo "Tag ${{ steps.vars.outputs.tag }} already exists; skipping tag creation"
-          else
-            git tag -a "${{ steps.vars.outputs.tag }}" -m "${{ steps.vars.outputs.tag }}"
-            git push origin "${{ steps.vars.outputs.tag }}"
-          fi
-
-      - name: Extract release notes from CHANGELOG.md
+      - name: Parse version and notes from CHANGELOG.md
         id: changelog
         env:
-          VERSION: ${{ steps.vars.outputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           python3 - <<'PY'
+          import json
           import os
           import pathlib
           import re
+          import sys
 
-          version = os.environ["VERSION"].strip()
           changelog = pathlib.Path("CHANGELOG.md")
           if not changelog.exists():
-            raise SystemExit(0)
+              print("::error::CHANGELOG.md not found")
+              sys.exit(1)
 
           text = changelog.read_text(encoding="utf-8")
+          heading_regex = re.compile(r"^##\s+v?(\d+\.\d+\.\d+)\s*$", re.MULTILINE)
 
-          pattern = rf"^## {re.escape(version)}\\n(.*?)(?=^## |\\Z)"
-          match = re.search(pattern, text, flags=re.MULTILINE | re.DOTALL)
-          if not match:
-            raise SystemExit(0)
+          requested = (os.environ.get("INPUT_VERSION") or "").strip().lstrip("v")
+          if requested:
+              version = requested
+          else:
+              first = heading_regex.search(text)
+              if first is None:
+                  print("::error::No release heading found in CHANGELOG.md (expected '## 0.1.12')")
+                  sys.exit(1)
+              version = first.group(1)
 
-          notes = match.group(1).strip()
-          pathlib.Path("release_notes.md").write_text(notes + "\\n", encoding="utf-8")
+          section_regex = re.compile(
+              rf"^##\s+v?{re.escape(version)}\s*$\n(.*?)(?=^##\s+|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          section_match = section_regex.search(text)
+          if section_match is None:
+              print(f"::error::Version {version} not found in CHANGELOG.md")
+              sys.exit(1)
+
+          notes = section_match.group(1).strip()
+          if not notes:
+              print(f"::error::CHANGELOG section for {version} is empty")
+              sys.exit(1)
+
+          manifest = pathlib.Path("custom_components/light_cycle/manifest.json")
+          if not manifest.exists():
+              print("::error::custom_components/light_cycle/manifest.json not found")
+              sys.exit(1)
+          manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+          manifest_version = str(manifest_data.get("version", "")).strip().lstrip("v")
+          if manifest_version != version:
+              print(
+                  f"::error::Version mismatch: CHANGELOG={version} manifest.json={manifest_version or '<missing>'}"
+              )
+              sys.exit(1)
+
+          pathlib.Path("release_notes.md").write_text(notes + "\n", encoding="utf-8")
+
+          tag = f"v{version}"
+          output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"version={version}\n")
+              handle.write(f"tag={tag}\n")
           PY
-          if [[ -f release_notes.md ]]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: tag_exists
+        shell: bash
+        run: |
+          if git ls-remote --tags --exit-code origin "refs/tags/${{ steps.changelog.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish GitHub Release (from CHANGELOG)
-        if: steps.changelog.outputs.found == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: ${{ steps.vars.outputs.version }}
-          body_path: release_notes.md
+      - name: Skip when release already exists
+        if: steps.tag_exists.outputs.exists == 'true'
+        shell: bash
+        run: |
+          echo "Release ${{ steps.changelog.outputs.tag }} already exists. Nothing to do."
 
-      - name: Publish GitHub Release (auto notes)
-        if: steps.changelog.outputs.found != 'true'
+      - name: Create GitHub Release (creates tag if needed)
+        if: steps.tag_exists.outputs.exists != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: ${{ steps.vars.outputs.version }}
-          generate_release_notes: true
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body_path: release_notes.md

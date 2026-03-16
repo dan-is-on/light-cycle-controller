@@ -4,10 +4,11 @@
     "step": {
       "user": {
         "title": "Instance basics",
-        "description": "Choose a name and the target light (or light group) to control.",
+        "description": "Choose a name and target lights (single lights and/or light groups). On first setup, set integration-wide parallel service calls. Recommended default is {default_max_parallel_calls}: it is fast without overloading hubs/APIs. If calls fail or lights lag, reduce this value (Tuya and some Zigbee bridges can throttle).",
         "data": {
           "name": "Instance name",
-          "target_entity_id": "Target light"
+          "target_entity_ids": "Target lights",
+          "max_parallel_calls": "Parallel service calls (integration-wide)"
         }
       },
       "device": {
@@ -58,6 +59,8 @@
             "invalid_event": "The captured event did not include enough data to identify the button.",
       "invalid_step_count": "Choose a number of steps between 1 and 8.",
       "invalid_brightness": "Brightness must be between 1 and 100.",
+      "invalid_max_parallel_calls": "Choose a parallel call count between 1 and 20.",
+      "target_required": "Select at least one target light.",
       "label_required": "Label is required.",
       "name_required": "Instance name is required."
     },
@@ -69,11 +72,12 @@
     "step": {
       "init": {
         "title": "Edit controller",
-        "description": "Update the target light, button device, and brightness steps.",
+        "description": "Update target lights, button device, brightness steps, and integration-wide parallel service calls. Recommended default is {default_max_parallel_calls}; lower it if you see Tuya/Zigbee throttling or intermittent apply failures.",
         "data": {
-          "target_entity_id": "Target light",
+          "target_entity_ids": "Target lights",
           "remote_device_id": "ZHA device",
           "recapture": "Recapture button press",
+          "max_parallel_calls": "Parallel service calls (integration-wide)",
           "on_steps": "Number of On steps"
         }
       },
@@ -111,6 +115,8 @@
       "invalid_event": "The captured event did not include enough data to identify the button.",
       "invalid_step_count": "Choose a number of steps between 1 and 8.",
       "invalid_brightness": "Brightness must be between 1 and 100.",
+      "invalid_max_parallel_calls": "Choose a parallel call count between 1 and 20.",
+      "target_required": "Select at least one target light.",
       "label_required": "Label is required."
     }
   }

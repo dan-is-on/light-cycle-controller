@@ -9,4 +9,4 @@ dump:
       description: Config entry ID to dump. Leave blank to dump all loaded entries.
       example: "0123456789abcdef0123456789abcdef"
       selector:
-        text:
+        text: {}

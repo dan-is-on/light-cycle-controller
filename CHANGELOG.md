@@ -9,8 +9,10 @@
 
 ## 0.1.9
 
-- Improve `light_cycle.dump` output to include target state/brightness and computed step classification.
-- Add more controller/target details to config entry diagnostics to help troubleshoot step cycling issues.
+- Make `light_cycle.dump` visible in the System Logs UI (log level `WARNING`) and include member vote summaries for light groups.
+- Fix `services.yaml` schema so the `light_cycle.dump` action loads cleanly.
+- Improve sync for light groups by classifying the current step from member states (mode vote) instead of relying on the group’s aggregated brightness.
+- Add expanded target + member vote summaries to config entry diagnostics to help troubleshoot “step count not applying” reports.
 
 ## 0.1.7
 

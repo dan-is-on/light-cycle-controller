@@ -44,6 +44,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
   - Light turns Off → cycle state becomes Off
   - Light becomes `unavailable` → treated as Off for cycling
   - Light is On → choose the configured step whose brightness % is nearest to the current brightness
+    - If the target is a **light group**, the controller classifies based on the member lights (mode vote) rather than relying on the group’s aggregated brightness attribute
     - If the entity does not report a brightness attribute, the controller keeps cycling using its last known step (sync is limited to Off vs On)
 
 ## Explicit non-goals (deferred)
@@ -93,16 +94,16 @@ After setup, you can edit an entry (target light, ZHA device/button capture, and
 
 ## Debugging
 
-### What shows in standard system logs
+### What shows in the System Logs UI
 
-When you edit an entry, the integration logs the saved step count and controller restart at `INFO` level.
+Home Assistant’s **Settings → System → Logs** UI primarily shows warnings/errors. `INFO`/`DEBUG` logs are typically only visible in the downloaded log file unless you change logging configuration.
 
-You can also dump the currently loaded configuration via a service:
+You can also dump the currently loaded configuration via an action/service:
 
 1. Developer Tools → **Actions**
-2. Choose **Call service**
-3. Service: `light_cycle.dump` (optional data: `{"entry_id": "..."}`)
-4. Check Settings → System → Logs (or download the full log) for `Dump:` lines
+2. Choose **Dump controller state** (`light_cycle.dump`)
+3. Optional data: `{"entry_id": "..."}`
+4. Check Settings → System → Logs for `Dump:` lines (dump output is logged at `WARNING` so it shows up there)
 
 Or download diagnostics for a specific entry:
 

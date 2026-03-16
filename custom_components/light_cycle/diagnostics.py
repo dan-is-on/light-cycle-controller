@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -27,6 +28,8 @@ async def async_get_config_entry_diagnostics(
 
     classified_index = None
     next_index = None
+    expanded_targets: list[str] | None = None
+    member_summary: dict[str, Any] | None = None
     if controller is not None:
         try:
             classified_index = controller._classify_state(target_state)
@@ -37,6 +40,38 @@ async def async_get_config_entry_diagnostics(
             next_index = (int(controller._resolved_index) + 1) % (len(controller._steps) + 1)
         except Exception:
             next_index = None
+
+        try:
+            expanded_targets = list(controller._expanded_target_entity_ids())
+        except Exception:
+            expanded_targets = None
+
+        if expanded_targets:
+            votes: Counter[int] = Counter()
+            counts: Counter[str] = Counter()
+
+            for entity_id in expanded_targets:
+                st = hass.states.get(entity_id)
+                if st is None:
+                    counts["missing"] += 1
+                    continue
+
+                counts[f"state_{st.state}"] += 1
+                if st.state != "on":
+                    continue
+
+                pct = controller._brightness_pct_from_state(st)
+                if pct is None:
+                    counts["on_no_brightness"] += 1
+                    continue
+
+                votes[controller._nearest_step_for_pct(pct)] += 1
+
+            member_summary = {
+                "total": len(expanded_targets),
+                "counts": dict(counts),
+                "step_votes": dict(votes),
+            }
 
     data: dict[str, Any] = {
         "entry": {
@@ -65,6 +100,8 @@ async def async_get_config_entry_diagnostics(
             "classified_index": classified_index,
             "next_index": next_index,
             "steps": getattr(controller, "_steps", None),
+            "expanded_targets": expanded_targets,
+            "member_summary": member_summary,
         }
 
     return data

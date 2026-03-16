@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from typing import Any, Callable
 
 import voluptuous as vol
@@ -76,7 +77,8 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
     entry_ids = [requested_entry_id] if requested_entry_id else list(controllers.keys())
 
     if not entry_ids:
-        LOGGER.info("Dump: no loaded controllers")
+        # Use WARNING so it shows up in Settings → System → Logs (which hides INFO).
+        LOGGER.warning("Dump: no loaded controllers")
         return
 
     for entry_id in entry_ids:
@@ -84,7 +86,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         entry = hass.config_entries.async_get_entry(entry_id)
 
         if controller is None:
-            LOGGER.info("Dump: entry=%s not loaded", entry_id)
+            LOGGER.warning("Dump: entry=%s not loaded", entry_id)
             continue
 
         merged = controller._merged_entry_data()
@@ -123,8 +125,47 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         expanded_targets = (
             controller._expanded_target_entity_ids() if target_entity_id else []
         )
+        member_summary: dict[str, Any] | None = None
+        if expanded_targets:
+            votes: Counter[int] = Counter()
+            counts: Counter[str] = Counter()
+            sample: list[dict[str, Any]] = []
 
-        LOGGER.info(
+            for entity_id in expanded_targets:
+                st = hass.states.get(entity_id)
+                if st is None:
+                    counts["missing"] += 1
+                    continue
+
+                counts[f"state_{st.state}"] += 1
+                if len(sample) < 10:
+                    sample.append(
+                        {
+                            "entity_id": entity_id,
+                            "state": st.state,
+                            "brightness": st.attributes.get(ATTR_BRIGHTNESS),
+                            "color_mode": st.attributes.get("color_mode"),
+                        }
+                    )
+
+                if st.state != STATE_ON:
+                    continue
+
+                pct = controller._brightness_pct_from_state(st)
+                if pct is None:
+                    counts["on_no_brightness"] += 1
+                    continue
+
+                votes[controller._nearest_step_for_pct(pct)] += 1
+
+            member_summary = {
+                "total": len(expanded_targets),
+                "counts": dict(counts),
+                "step_votes": dict(votes),
+                "sample": sample,
+            }
+
+        LOGGER.warning(
             "Dump: entry=%s title=%s target=%s state=%s brightness=%s controller_steps=%s entry_steps=%s resolved=%s classified=%s next(resolved)=%s next(classified)=%s targets=%s",
             controller.entry.entry_id,
             (entry.title if entry is not None else controller.entry.title),
@@ -139,7 +180,13 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
             next_from_classified,
             len(expanded_targets),
         )
-        LOGGER.info(
+        if member_summary is not None:
+            LOGGER.warning(
+                "Dump: entry=%s members=%s",
+                controller.entry.entry_id,
+                member_summary,
+            )
+        LOGGER.warning(
             "Dump: entry=%s ieee=%s endpoint=%s command=%s cluster_id=%s args=%s",
             controller.entry.entry_id,
             merged.get(CONF_REMOTE_IEEE),
@@ -148,7 +195,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
             merged.get(CONF_CLUSTER_ID),
             merged.get(CONF_ARGS),
         )
-        LOGGER.info(
+        LOGGER.warning(
             "Dump: entry=%s steps=%s",
             controller.entry.entry_id,
             [
@@ -305,6 +352,15 @@ class LightCycleController:
         if state.state != STATE_ON:
             return 0
 
+        # For light groups (and some integrations that expose a member `entity_id` list),
+        # determine the current step based on member states rather than the aggregated
+        # group brightness. This avoids common cases where group brightness is `None` or
+        # reflects an outlier member.
+        members = state.attributes.get(ATTR_ENTITY_ID)
+        if isinstance(members, list) and members:
+            expanded = self._expanded_entity_ids(state.entity_id)
+            return self._classify_expanded_members(expanded)
+
         brightness = state.attributes.get(ATTR_BRIGHTNESS)
         if brightness is None:
             if self._resolved_index > 0:
@@ -322,6 +378,94 @@ class LightCycleController:
             return 0
 
         brightness_pct = round((brightness_int / 255) * 100)
+        best_step: int = 1
+        best_delta: int = 999
+
+        for step_num, step in enumerate(self._steps, start=1):
+            try:
+                step_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            delta = abs(step_pct - brightness_pct)
+            if delta < best_delta:
+                best_delta = delta
+                best_step = step_num
+
+        return best_step
+
+    def _classify_expanded_members(self, entity_ids: list[str]) -> int:
+        any_on = False
+        on_step_votes: list[int] = []
+
+        for entity_id in entity_ids:
+            if not isinstance(entity_id, str) or not entity_id.startswith("light."):
+                continue
+
+            member_state = self.hass.states.get(entity_id)
+            if member_state is None:
+                continue
+
+            if member_state.state in (STATE_OFF, STATE_UNAVAILABLE, STATE_UNKNOWN):
+                continue
+
+            if member_state.state != STATE_ON:
+                continue
+
+            any_on = True
+            brightness_pct = self._brightness_pct_from_state(member_state)
+            if brightness_pct is None:
+                continue
+
+            on_step_votes.append(self._nearest_step_for_pct(brightness_pct))
+
+        if not any_on:
+            # The parent entity is ON (we only call this when the configured/parent
+            # entity is ON). If we can't find any ON member states (e.g. states not
+            # loaded yet), fall back to the last resolved index.
+            if self._resolved_index > 0:
+                return min(self._resolved_index, max(1, len(self._steps)))
+            return 1
+
+        if not on_step_votes:
+            if self._resolved_index > 0:
+                return min(self._resolved_index, max(1, len(self._steps)))
+            return 1
+
+        counts = Counter(on_step_votes)
+        top = counts.most_common()
+        if not top:
+            return 1
+
+        best_count = top[0][1]
+        tied = [idx for idx, count in top if count == best_count]
+        if len(tied) == 1:
+            return tied[0]
+
+        if self._resolved_index in tied:
+            return int(self._resolved_index)
+
+        if self._resolved_index > 0:
+            resolved = int(self._resolved_index)
+            tied.sort(key=lambda idx: abs(idx - resolved))
+            return tied[0]
+
+        return min(tied)
+
+    @staticmethod
+    def _brightness_pct_from_state(state: State) -> int | None:
+        brightness = state.attributes.get(ATTR_BRIGHTNESS)
+        if brightness is None:
+            return None
+        try:
+            brightness_int = int(brightness)
+        except (TypeError, ValueError):
+            return None
+        if brightness_int <= 0:
+            return None
+        return round((brightness_int / 255) * 100)
+
+    def _nearest_step_for_pct(self, brightness_pct: int) -> int:
         best_step: int = 1
         best_delta: int = 999
 
@@ -370,6 +514,8 @@ class LightCycleController:
                     [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in new_steps],
                 )
             self._steps = new_steps
+            if self._resolved_index > len(self._steps):
+                self._resolved_index = len(self._steps)
 
     async def _async_handle_press(self) -> None:
         async with self._press_lock:
@@ -430,17 +576,48 @@ class LightCycleController:
         )
 
     def _expanded_target_entity_ids(self) -> list[str]:
-        """Return entity ids to call.
+        """Return leaf `light.*` entity ids to call.
 
-        If the configured target is a light group that exposes member `entity_id`s,
-        return those so we can apply changes best-effort (one failing light won't
-        necessarily block the whole group change).
+        If the configured target is a light group, recursively expand nested groups and
+        de-duplicate entities. This avoids calling other group entities (which can hide
+        partial failures and skew brightness classification).
         """
-        state = self.hass.states.get(self._target_entity_id)
-        members = state.attributes.get(ATTR_ENTITY_ID) if state is not None else None
-        if isinstance(members, list) and members:
-            return [str(entity_id) for entity_id in members]
-        return [self._target_entity_id]
+        return self._expanded_entity_ids(self._target_entity_id)
+
+    def _expanded_entity_ids(self, root_entity_id: str) -> list[str]:
+        visited: set[str] = set()
+        leaves: list[str] = []
+        stack: list[str] = [root_entity_id]
+
+        while stack:
+            entity_id = stack.pop()
+            if not isinstance(entity_id, str):
+                continue
+            if entity_id in visited:
+                continue
+            visited.add(entity_id)
+
+            state = self.hass.states.get(entity_id)
+            members = state.attributes.get(ATTR_ENTITY_ID) if state is not None else None
+            if isinstance(members, list) and members:
+                for member in members:
+                    if isinstance(member, str):
+                        stack.append(member)
+                continue
+
+            if entity_id.startswith("light."):
+                leaves.append(entity_id)
+
+        # Keep order stable-ish and remove duplicates while preserving first occurrence.
+        unique: list[str] = []
+        seen: set[str] = set()
+        for entity_id in leaves:
+            if entity_id in seen:
+                continue
+            seen.add(entity_id)
+            unique.append(entity_id)
+
+        return unique or [root_entity_id]
 
     async def _async_call_light_service_best_effort(
         self,

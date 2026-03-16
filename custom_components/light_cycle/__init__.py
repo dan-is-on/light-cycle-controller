@@ -125,29 +125,10 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle config entry updates (options/data) by restarting the controller."""
-    controllers: dict[str, LightCycleController] = hass.data.get(DOMAIN, {}).get(
-        DATA_CONTROLLERS, {}
-    )
-    controller: LightCycleController | None = controllers.get(entry.entry_id)
-    if controller is None:
-        await hass.config_entries.async_reload(entry.entry_id)
-        return
-
     steps = entry.options.get(CONF_STEPS, entry.data.get(CONF_STEPS, []))
     steps_len = len(steps) if isinstance(steps, list) else "?"
-    LOGGER.info("Entry %s updated; restarting controller (steps=%s)", entry.entry_id, steps_len)
-
-    try:
-        await controller.async_stop()
-        new_controller = LightCycleController(hass, entry)
-        await new_controller.async_start()
-        controllers[entry.entry_id] = new_controller
-    except Exception:
-        LOGGER.exception(
-            "Failed restarting controller for entry %s; falling back to async_reload",
-            entry.entry_id,
-        )
-        await hass.config_entries.async_reload(entry.entry_id)
+    LOGGER.info("Entry %s updated; reloading (steps=%s)", entry.entry_id, steps_len)
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

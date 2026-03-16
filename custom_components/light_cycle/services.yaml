@@ -1,0 +1,12 @@
+dump:
+  name: Dump controller state
+  description: |
+    Dump the currently loaded controller configuration and runtime state for debugging.
+    The output is logged as `Dump:` lines in Home Assistant system logs.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID to dump. Leave blank to dump all loaded entries.
+      example: "0123456789abcdef0123456789abcdef"
+      selector:
+        text:

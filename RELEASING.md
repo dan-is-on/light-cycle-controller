@@ -25,3 +25,6 @@ This repo includes a workflow at `.github/workflows/release.yml` that can publis
 - **Manual:** GitHub → Actions → **Release** → “Run workflow” and enter the version (e.g. `0.1.6`).
 
 The workflow extracts the matching `## 0.1.6` section from `CHANGELOG.md` and uses it as the release notes.
+If the section is missing, it falls back to GitHub’s auto-generated release notes.
+
+This workflow does **not** publish to the HACS default repository (“official store”) — it only creates GitHub Releases in this repo, which HACS then uses to show semantic versions instead of commit SHAs.

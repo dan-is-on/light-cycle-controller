@@ -99,9 +99,15 @@ When you edit an entry, the integration logs the saved step count and controller
 
 You can also dump the currently loaded configuration via a service:
 
-1. Developer Tools → **Services**
-2. Call `light_cycle.dump` (optional field: `entry_id`)
-3. Check Settings → System → Logs for `Dump:` lines
+1. Developer Tools → **Actions**
+2. Choose **Call service**
+3. Service: `light_cycle.dump` (optional data: `{"entry_id": "..."}`)
+4. Check Settings → System → Logs (or download the full log) for `Dump:` lines
+
+Or download diagnostics for a specific entry:
+
+1. Settings → Devices & Services → “Light Cycle Controller”
+2. Open the entry’s menu (⋮) → **Download diagnostics**
 
 ### Debug logging (button presses)
 

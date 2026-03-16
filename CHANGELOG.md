@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8
+
+- Reload the config entry when options are saved (more reliable edits + ensures old listeners are cleaned up).
+- Add `services.yaml` documentation for `light_cycle.dump`.
+- Add config entry diagnostics (downloadable from the integration entry) to capture active steps/controller state for debugging.
+- Update README debugging instructions for Home Assistant 2026.3+ (Developer Tools → Actions).
+
 ## 0.1.7
 
 - Log config edits and controller restarts at `INFO` level (so it shows up in standard system logs).

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7
+
+- Log config edits and controller restarts at `INFO` level (so it shows up in standard system logs).
+- Add a `light_cycle.dump` service to print the active controller configuration to logs.
+- Apply light group member changes sequentially (best-effort) to reduce API concurrency issues.
+
 ## 0.1.6
 
 - Add extra debug logging to troubleshoot step edits not applying.

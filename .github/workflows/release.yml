@@ -41,8 +41,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.vars.outputs.tag }}" -m "${{ steps.vars.outputs.tag }}"
-          git push origin "${{ steps.vars.outputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/${{ steps.vars.outputs.tag }}" >/dev/null; then
+            echo "Tag ${{ steps.vars.outputs.tag }} already exists; skipping tag creation"
+          else
+            git tag -a "${{ steps.vars.outputs.tag }}" -m "${{ steps.vars.outputs.tag }}"
+            git push origin "${{ steps.vars.outputs.tag }}"
+          fi
 
       - name: Extract release notes from CHANGELOG.md
         env:

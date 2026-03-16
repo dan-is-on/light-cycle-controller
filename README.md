@@ -93,7 +93,19 @@ After setup, you can edit an entry (target light, ZHA device/button capture, and
 
 ## Debugging
 
-Enable debug logging and reproduce a button press:
+### What shows in standard system logs
+
+When you edit an entry, the integration logs the saved step count and controller restart at `INFO` level.
+
+You can also dump the currently loaded configuration via a service:
+
+1. Developer Tools → **Services**
+2. Call `light_cycle.dump` (optional field: `entry_id`)
+3. Check Settings → System → Logs for `Dump:` lines
+
+### Debug logging (button presses)
+
+Enable debug logging to see per-press logs:
 
 1. Settings → System → Logs → ⋮ → **Configure logging**
 2. Add: `custom_components.light_cycle: debug`

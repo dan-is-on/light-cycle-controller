@@ -409,7 +409,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     errors["base"] = "invalid_step_count"
 
             if not errors:
-                LOGGER.debug(
+                LOGGER.info(
                     "Options init for entry %s: target=%s device=%s on_steps=%s recapture=%s",
                     self._config_entry.entry_id,
                     target_entity_id,
@@ -576,7 +576,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     CONF_ARGS: self._signature.args,
                     CONF_STEPS: steps,
                 }
-                LOGGER.debug(
+                LOGGER.info(
                     "Saving options for entry %s: steps=%s brightness=%s",
                     self._config_entry.entry_id,
                     len(steps),

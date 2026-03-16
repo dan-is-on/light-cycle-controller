@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Any, Callable
 
+import voluptuous as vol
+
 from homeassistant.components.light import ATTR_BRIGHTNESS, DOMAIN as LIGHT_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -34,35 +36,112 @@ LOGGER = logging.getLogger(__name__)
 
 EVENT_ZHA_EVENT = "zha_event"
 
+DATA_CONTROLLERS = "controllers"
+DATA_SERVICES_REGISTERED = "services_registered"
+
+SERVICE_DUMP = "dump"
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Light Cycle Controller from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    controllers: dict[str, LightCycleController] = domain_data.setdefault(DATA_CONTROLLERS, {})
+
+    if not domain_data.get(DATA_SERVICES_REGISTERED):
+        async def _handle_dump(call) -> None:
+            await _async_handle_dump_service(hass, call)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_DUMP,
+            _handle_dump,
+            schema=vol.Schema({vol.Optional("entry_id"): str}),
+        )
+        domain_data[DATA_SERVICES_REGISTERED] = True
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     controller = LightCycleController(hass, entry)
     await controller.async_start()
-    hass.data[DOMAIN][entry.entry_id] = controller
+    controllers[entry.entry_id] = controller
     return True
+
+
+async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
+    """Dump controller/entry state to logs (for debugging)."""
+    domain_data = hass.data.get(DOMAIN, {})
+    controllers: dict[str, LightCycleController] = domain_data.get(DATA_CONTROLLERS, {})
+
+    requested_entry_id = call.data.get("entry_id")
+    entry_ids = [requested_entry_id] if requested_entry_id else list(controllers.keys())
+
+    if not entry_ids:
+        LOGGER.info("Dump: no loaded controllers")
+        return
+
+    for entry_id in entry_ids:
+        controller = controllers.get(entry_id)
+        entry = hass.config_entries.async_get_entry(entry_id)
+
+        if controller is None:
+            LOGGER.info("Dump: entry=%s not loaded", entry_id)
+            continue
+
+        merged = controller._merged_entry_data()
+        steps = merged.get(CONF_STEPS, [])
+        steps_list = steps if isinstance(steps, list) else []
+
+        LOGGER.info(
+            "Dump: entry=%s title=%s target=%s controller_steps=%s entry_steps=%s resolved=%s",
+            controller.entry.entry_id,
+            (entry.title if entry is not None else controller.entry.title),
+            merged.get(CONF_TARGET_ENTITY_ID),
+            len(controller._steps),
+            len(steps_list),
+            controller._resolved_index,
+        )
+        LOGGER.info(
+            "Dump: entry=%s ieee=%s endpoint=%s command=%s cluster_id=%s args=%s",
+            controller.entry.entry_id,
+            merged.get(CONF_REMOTE_IEEE),
+            merged.get(CONF_ENDPOINT_ID),
+            merged.get(CONF_COMMAND),
+            merged.get(CONF_CLUSTER_ID),
+            merged.get(CONF_ARGS),
+        )
+        LOGGER.info(
+            "Dump: entry=%s steps=%s",
+            controller.entry.entry_id,
+            [
+                {
+                    "label": step.get("label"),
+                    "brightness_pct": step.get(CONF_STEP_BRIGHTNESS_PCT),
+                }
+                for step in steps_list
+                if isinstance(step, dict)
+            ],
+        )
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle config entry updates (options/data) by restarting the controller."""
-    controller: LightCycleController | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    controllers: dict[str, LightCycleController] = hass.data.get(DOMAIN, {}).get(
+        DATA_CONTROLLERS, {}
+    )
+    controller: LightCycleController | None = controllers.get(entry.entry_id)
     if controller is None:
         await hass.config_entries.async_reload(entry.entry_id)
         return
 
     steps = entry.options.get(CONF_STEPS, entry.data.get(CONF_STEPS, []))
     steps_len = len(steps) if isinstance(steps, list) else "?"
-    LOGGER.debug("Entry %s updated; restarting controller (steps=%s)", entry.entry_id, steps_len)
+    LOGGER.info("Entry %s updated; restarting controller (steps=%s)", entry.entry_id, steps_len)
 
     try:
         await controller.async_stop()
         new_controller = LightCycleController(hass, entry)
         await new_controller.async_start()
-        hass.data[DOMAIN][entry.entry_id] = new_controller
+        controllers[entry.entry_id] = new_controller
     except Exception:
         LOGGER.exception(
             "Failed restarting controller for entry %s; falling back to async_reload",
@@ -73,12 +152,18 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    controller: LightCycleController | None = hass.data.get(DOMAIN, {}).pop(
-        entry.entry_id, None
-    )
+    domain_data = hass.data.get(DOMAIN)
+    if domain_data is None:
+        return True
+
+    controllers: dict[str, LightCycleController] = domain_data.get(DATA_CONTROLLERS, {})
+    controller: LightCycleController | None = controllers.pop(entry.entry_id, None)
     if controller is not None:
         await controller.async_stop()
-    if not hass.data.get(DOMAIN):
+
+    if not controllers:
+        if domain_data.get(DATA_SERVICES_REGISTERED):
+            hass.services.async_remove(DOMAIN, SERVICE_DUMP)
         hass.data.pop(DOMAIN, None)
     return True
 
@@ -123,7 +208,7 @@ class LightCycleController:
             self.hass.states.get(self._target_entity_id)
         )
 
-        LOGGER.debug(
+        LOGGER.info(
             "Started controller %s for %s (steps=%s ieee=%s endpoint=%s command=%s)",
             self.entry.entry_id,
             self._target_entity_id,
@@ -132,7 +217,7 @@ class LightCycleController:
             self._endpoint_id,
             self._command,
         )
-        LOGGER.debug(
+        LOGGER.info(
             "Controller %s steps for %s: %s",
             self.entry.entry_id,
             self._target_entity_id,
@@ -253,13 +338,13 @@ class LightCycleController:
         if isinstance(steps, list):
             new_steps = list(steps)
             if new_steps != self._steps:
-                LOGGER.debug(
+                LOGGER.info(
                     "Refreshed steps for entry %s: %s -> %s",
                     self.entry.entry_id,
                     len(self._steps),
                     len(new_steps),
                 )
-                LOGGER.debug(
+                LOGGER.info(
                     "New steps for %s: %s",
                     self._target_entity_id,
                     [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in new_steps],
@@ -343,15 +428,15 @@ class LightCycleController:
         entity_ids: list[str],
         service_data: dict[str, Any],
     ) -> None:
-        tasks = [
-            self._async_call_light_service_single(service, entity_id, service_data)
-            for entity_id in entity_ids
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
+        failures: list[tuple[str, Exception]] = []
+        for entity_id in entity_ids:
+            exc = await self._async_call_light_service_single(
+                service, entity_id, service_data
+            )
+            if exc is None:
+                continue
+            failures.append((entity_id, exc))
 
-        failures: list[tuple[str, Exception]] = [
-            (entity_id, exc) for entity_id, exc in zip(entity_ids, results) if exc
-        ]
         if not failures:
             return
 

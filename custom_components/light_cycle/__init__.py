@@ -283,17 +283,28 @@ class LightCycleController:
                 next_index,
                 len(self._steps),
             )
-            await self._async_apply_index(next_index)
-            self._resolved_index = next_index
+            try:
+                await self._async_apply_index(next_index)
+            except Exception:
+                LOGGER.exception(
+                    "Failed applying cycle step (entry=%s title=%s target=%s next=%s steps=%s)",
+                    self.entry.entry_id,
+                    self.entry.title,
+                    self._target_entity_id,
+                    next_index,
+                    len(self._steps),
+                )
+                return
+            else:
+                self._resolved_index = next_index
 
     async def _async_apply_index(self, index: int) -> None:
+        target_entity_ids = self._expanded_target_entity_ids()
+
         if index == 0:
             LOGGER.debug("Turning off %s", self._target_entity_id)
-            await self.hass.services.async_call(
-                LIGHT_DOMAIN,
-                "turn_off",
-                {ATTR_ENTITY_ID: self._target_entity_id},
-                blocking=True,
+            await self._async_call_light_service_best_effort(
+                "turn_off", target_entity_ids, {}
             )
             return
 
@@ -309,9 +320,59 @@ class LightCycleController:
             brightness,
             label,
         )
-        await self.hass.services.async_call(
-            LIGHT_DOMAIN,
-            "turn_on",
-            {ATTR_ENTITY_ID: self._target_entity_id, ATTR_BRIGHTNESS: brightness},
-            blocking=True,
+        await self._async_call_light_service_best_effort(
+            "turn_on", target_entity_ids, {ATTR_BRIGHTNESS: brightness}
         )
+
+    def _expanded_target_entity_ids(self) -> list[str]:
+        """Return entity ids to call.
+
+        If the configured target is a light group that exposes member `entity_id`s,
+        return those so we can apply changes best-effort (one failing light won't
+        necessarily block the whole group change).
+        """
+        state = self.hass.states.get(self._target_entity_id)
+        members = state.attributes.get(ATTR_ENTITY_ID) if state is not None else None
+        if isinstance(members, list) and members:
+            return [str(entity_id) for entity_id in members]
+        return [self._target_entity_id]
+
+    async def _async_call_light_service_best_effort(
+        self,
+        service: str,
+        entity_ids: list[str],
+        service_data: dict[str, Any],
+    ) -> None:
+        tasks = [
+            self._async_call_light_service_single(service, entity_id, service_data)
+            for entity_id in entity_ids
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        failures: list[tuple[str, Exception]] = [
+            (entity_id, exc) for entity_id, exc in zip(entity_ids, results) if exc
+        ]
+        if not failures:
+            return
+
+        for entity_id, exc in failures:
+            LOGGER.warning("light.%s failed for %s: %s", service, entity_id, exc)
+
+        if len(failures) == len(entity_ids):
+            # Re-raise the first failure (preserves traceback) so the press handler
+            # treats the step application as failed.
+            raise failures[0][1]
+
+    async def _async_call_light_service_single(
+        self, service: str, entity_id: str, service_data: dict[str, Any]
+    ) -> Exception | None:
+        try:
+            await self.hass.services.async_call(
+                LIGHT_DOMAIN,
+                service,
+                {ATTR_ENTITY_ID: entity_id, **service_data},
+                blocking=True,
+            )
+        except Exception as exc:
+            return exc
+        return None

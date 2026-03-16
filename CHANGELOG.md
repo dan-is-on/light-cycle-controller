@@ -4,6 +4,8 @@
 
 - Add extra debug logging to troubleshoot step edits not applying.
 - Refresh the controller’s step list from the latest config entry (so edits apply even if the entry object is stale).
+- Catch and log failures when calling `light.turn_on`/`light.turn_off` to avoid “Task exception was never retrieved”.
+- If the target is a light group that exposes member `entity_id`s, apply changes best-effort per member (one failing light won’t always block the whole step).
 
 ## 0.1.5
 

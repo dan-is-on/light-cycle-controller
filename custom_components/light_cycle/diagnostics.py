@@ -22,6 +22,22 @@ async def async_get_config_entry_diagnostics(
     )
     target_state = hass.states.get(target_entity_id) if target_entity_id else None
 
+    controllers: dict[str, Any] = hass.data.get(DOMAIN, {}).get("controllers", {})
+    controller = controllers.get(entry.entry_id)
+
+    classified_index = None
+    next_index = None
+    if controller is not None:
+        try:
+            classified_index = controller._classify_state(target_state)
+        except Exception:
+            classified_index = None
+
+        try:
+            next_index = (int(controller._resolved_index) + 1) % (len(controller._steps) + 1)
+        except Exception:
+            next_index = None
+
     data: dict[str, Any] = {
         "entry": {
             "entry_id": entry.entry_id,
@@ -35,14 +51,19 @@ async def async_get_config_entry_diagnostics(
             "brightness": None
             if target_state is None
             else target_state.attributes.get("brightness"),
+            "supported_color_modes": None
+            if target_state is None
+            else target_state.attributes.get("supported_color_modes"),
+            "color_mode": None if target_state is None else target_state.attributes.get("color_mode"),
+            "members": None if target_state is None else target_state.attributes.get("entity_id"),
         },
     }
 
-    controllers: dict[str, Any] = hass.data.get(DOMAIN, {}).get("controllers", {})
-    controller = controllers.get(entry.entry_id)
     if controller is not None:
         data["controller"] = {
             "resolved_index": getattr(controller, "_resolved_index", None),
+            "classified_index": classified_index,
+            "next_index": next_index,
             "steps": getattr(controller, "_steps", None),
         }
 

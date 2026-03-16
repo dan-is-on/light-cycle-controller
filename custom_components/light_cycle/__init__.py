@@ -90,15 +90,54 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         merged = controller._merged_entry_data()
         steps = merged.get(CONF_STEPS, [])
         steps_list = steps if isinstance(steps, list) else []
+        target_entity_id = merged.get(CONF_TARGET_ENTITY_ID)
+
+        target_state = hass.states.get(target_entity_id) if target_entity_id else None
+        target_state_str = None if target_state is None else target_state.state
+        target_brightness = (
+            None
+            if target_state is None
+            else target_state.attributes.get(ATTR_BRIGHTNESS)
+        )
+        try:
+            classified = controller._classify_state(target_state)
+        except Exception:
+            classified = None
+
+        try:
+            next_from_classified = (
+                None
+                if classified is None
+                else (int(classified) + 1) % (len(controller._steps) + 1)
+            )
+        except Exception:
+            next_from_classified = None
+
+        try:
+            next_from_resolved = (int(controller._resolved_index) + 1) % (
+                len(controller._steps) + 1
+            )
+        except Exception:
+            next_from_resolved = None
+
+        expanded_targets = (
+            controller._expanded_target_entity_ids() if target_entity_id else []
+        )
 
         LOGGER.info(
-            "Dump: entry=%s title=%s target=%s controller_steps=%s entry_steps=%s resolved=%s",
+            "Dump: entry=%s title=%s target=%s state=%s brightness=%s controller_steps=%s entry_steps=%s resolved=%s classified=%s next(resolved)=%s next(classified)=%s targets=%s",
             controller.entry.entry_id,
             (entry.title if entry is not None else controller.entry.title),
-            merged.get(CONF_TARGET_ENTITY_ID),
+            target_entity_id,
+            target_state_str,
+            target_brightness,
             len(controller._steps),
             len(steps_list),
             controller._resolved_index,
+            classified,
+            next_from_resolved,
+            next_from_classified,
+            len(expanded_targets),
         )
         LOGGER.info(
             "Dump: entry=%s ieee=%s endpoint=%s command=%s cluster_id=%s args=%s",

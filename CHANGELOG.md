@@ -7,6 +7,11 @@
 - Add config entry diagnostics (downloadable from the integration entry) to capture active steps/controller state for debugging.
 - Update README debugging instructions for Home Assistant 2026.3+ (Developer Tools → Actions).
 
+## 0.1.9
+
+- Improve `light_cycle.dump` output to include target state/brightness and computed step classification.
+- Add more controller/target details to config entry diagnostics to help troubleshoot step cycling issues.
+
 ## 0.1.7
 
 - Log config edits and controller restarts at `INFO` level (so it shows up in standard system logs).

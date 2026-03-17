@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.15
+
+- Replace `en-AU` translation pack with `en-GB` for broader Home Assistant language support while keeping UK spelling in UI labels.
+
+## 0.1.14
+
+- Refine step configuration UX to a two-phase flow: first set label/brightness/mode for all steps, then configure mode-specific fields one step at a time.
+- Show only relevant controls per step detail page (white/temperature slider **or** colour picker + hex), reducing config-flow clutter.
+- Add Australian English translation support with `en-AU` locale strings (UI uses “colour” when HA language is set to Australian English).
+- Standardize dump output to `INFO` level and keep `WARNING`/`ERROR` focused on actual runtime issues.
+- Expand inline comments/docstrings across runtime, config flow, diagnostics, settings, and constants for maintainability.
+
 ## 0.1.13
 
 - Add integration-wide `max_parallel_calls` setting (persisted in storage), asked during first entry setup and editable later in the entry Configure flow.

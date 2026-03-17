@@ -80,10 +80,10 @@ This repository is intended to be HACS-compatible.
 3. Install, then restart Home Assistant
 4. Settings → Devices & Services → **Add Integration** → “Light Cycle Controller”
 
-### Australian English UI text
+### British English UI text
 
-This integration now includes an `en-AU` translation file.  
-If your Home Assistant language is set to Australian English, UI labels use local spelling (for example, “Colour”).
+This integration includes an `en-GB` translation file.  
+If your Home Assistant language is set to English (UK), UI labels use local spelling (for example, “Colour”).
 
 ### Integration icon (“icon not available”)
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.16
+
+- Fix `light.turn_on` payload validation by sending only one brightness key (`brightness`) per call, resolving button presses that previously failed with `MultipleInvalid` and appeared to do nothing.
+- Add extra debug logging around per-entity payload building and service dispatch/failures so future runtime issues are easier to diagnose from Home Assistant logs.
+
 ## 0.1.15
 
 - Replace `en-AU` translation pack with `en-GB` for broader Home Assistant language support while keeping UK spelling in UI labels.

@@ -861,18 +861,35 @@ class LightCycleController:
         brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
         brightness = round((brightness_pct / 100) * 255)
         payload: dict[str, Any] = {
+            # Home Assistant validates brightness keys as mutually exclusive, so
+            # we send only one key here to avoid `MultipleInvalid` on turn_on.
             ATTR_BRIGHTNESS: brightness,
-            "brightness_pct": brightness_pct,
         }
 
         mode = self._step_mode(step)
         if mode == STEP_MODE_COLOR:
             # Color mode keeps brightness and color in one service call.
             payload.update(self._color_payload_for_entity(entity_id, self._step_rgb(step)))
+            LOGGER.debug(
+                "Built turn_on payload (entry=%s entity=%s label=%s mode=%s keys=%s)",
+                self.entry.entry_id,
+                entity_id,
+                step.get("label"),
+                mode,
+                sorted(payload.keys()),
+            )
             return payload
 
         if not self._supports_color_temp(entity_id):
             # If temperature control is unsupported, apply brightness-only.
+            LOGGER.debug(
+                "Built turn_on payload (entry=%s entity=%s label=%s mode=%s keys=%s color_temp_supported=False)",
+                self.entry.entry_id,
+                entity_id,
+                step.get("label"),
+                mode,
+                sorted(payload.keys()),
+            )
             return payload
 
         # White/temp mode maps 0..100 UI slider to this entity's Kelvin range.
@@ -884,6 +901,16 @@ class LightCycleController:
             payload["color_temp_kelvin"] = kelvin
         else:
             payload["color_temp"] = round(1_000_000 / max(1, kelvin))
+        LOGGER.debug(
+            "Built turn_on payload (entry=%s entity=%s label=%s mode=%s temp_pct=%s kelvin=%s keys=%s)",
+            self.entry.entry_id,
+            entity_id,
+            step.get("label"),
+            mode,
+            temp_pct,
+            kelvin,
+            sorted(payload.keys()),
+        )
         return payload
 
     def _merged_entry_data(self) -> dict[str, Any]:
@@ -1125,6 +1152,28 @@ class LightCycleController:
             # Build payloads per entity to account for differing color capabilities.
             payload_by_entity[entity_id] = self._turn_on_payload_for_entity(entity_id, step)
 
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            sample_entity = entity_ids[0]
+            sample_payload = payload_by_entity[sample_entity]
+            brightness_conflicts = [
+                entity_id
+                for entity_id, payload in payload_by_entity.items()
+                if ATTR_BRIGHTNESS in payload and "brightness_pct" in payload
+            ]
+            LOGGER.debug(
+                (
+                    "Prepared step payloads (entry=%s label=%s mode=%s entities=%s "
+                    "sample_entity=%s sample_keys=%s brightness_conflicts=%s)"
+                ),
+                self.entry.entry_id,
+                step.get("label"),
+                self._step_mode(step),
+                len(entity_ids),
+                sample_entity,
+                sorted(sample_payload.keys()),
+                len(brightness_conflicts),
+            )
+
         failures = await self._async_call_light_service_many_with_payload(
             "turn_on", payload_by_entity
         )
@@ -1241,6 +1290,15 @@ class LightCycleController:
                 blocking=True,
             )
         except Exception as exc:
+            LOGGER.debug(
+                "light.%s call exception (entry=%s entity=%s keys=%s payload=%s): %s",
+                service,
+                self.entry.entry_id,
+                entity_id,
+                sorted(service_data.keys()),
+                service_data,
+                exc,
+            )
             return exc
         return None
 
@@ -1255,6 +1313,13 @@ class LightCycleController:
             list(payload_by_entity.keys())
         )
         max_parallel_calls = self._max_parallel_calls()
+        LOGGER.debug(
+            "Dispatching light.%s with per-entity payloads (entry=%s entities=%s parallel=%s)",
+            service,
+            self.entry.entry_id,
+            len(ordered_entity_ids),
+            max_parallel_calls,
+        )
         if max_parallel_calls <= 1 or len(ordered_entity_ids) == 1:
             failures: list[tuple[str, Exception]] = []
             for entity_id in ordered_entity_ids:
@@ -1287,6 +1352,14 @@ class LightCycleController:
 
         ordered_entity_ids = self._ordered_entity_ids_for_dispatch(entity_ids)
         max_parallel_calls = self._max_parallel_calls()
+        LOGGER.debug(
+            "Dispatching light.%s with shared payload (entry=%s entities=%s parallel=%s keys=%s)",
+            service,
+            self.entry.entry_id,
+            len(ordered_entity_ids),
+            max_parallel_calls,
+            sorted(service_data.keys()),
+        )
         if max_parallel_calls <= 1 or len(ordered_entity_ids) == 1:
             failures: list[tuple[str, Exception]] = []
             for entity_id in ordered_entity_ids:

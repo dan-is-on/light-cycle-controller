@@ -58,36 +58,44 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _step_label_key(step: int) -> str:
+    """Return dynamic form key for a step label field."""
     return f"step_{step}_{CONF_STEP_LABEL}"
 
 
 def _step_brightness_key(step: int) -> str:
+    """Return dynamic form key for a step brightness field."""
     return f"step_{step}_{CONF_STEP_BRIGHTNESS_PCT}"
 
 
 def _step_mode_key(step: int) -> str:
+    """Return dynamic form key for a step mode field."""
     return f"step_{step}_{CONF_STEP_MODE}"
 
 
 def _step_temp_pct_key(step: int) -> str:
+    """Return dynamic form key for a step temperature-percentage field."""
     return f"step_{step}_{CONF_STEP_TEMP_PCT}"
 
 
 def _step_color_hex_key(step: int) -> str:
+    """Return dynamic form key for a step hex color field."""
     return f"step_{step}_{CONF_STEP_COLOR_HEX}"
 
 
 def _step_color_rgb_key(step: int) -> str:
+    """Return dynamic form key for a step RGB color selector field."""
     return f"step_{step}_{CONF_STEP_COLOR_RGB}"
 
 
 def _default_brightness_pct(step: int, total_steps: int) -> int:
+    """Return a simple evenly spaced default brightness for a step index."""
     if total_steps <= 0:
         return 100
     return max(1, min(100, round(step * 100 / total_steps)))
 
 
 def _normalize_step_mode(value: Any) -> str:
+    """Normalize user input to a supported step mode."""
     mode = str(value or "").strip().lower()
     if mode == STEP_MODE_COLOR:
         return STEP_MODE_COLOR
@@ -95,6 +103,7 @@ def _normalize_step_mode(value: Any) -> str:
 
 
 def _normalize_hex_color(value: Any) -> str | None:
+    """Normalize supported hex input to uppercase `#RRGGBB` format."""
     if not isinstance(value, str):
         return None
     raw = value.strip()
@@ -110,10 +119,12 @@ def _normalize_hex_color(value: Any) -> str | None:
 
 
 def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    """Convert RGB tuple to `#RRGGBB`."""
     return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
 
 
 def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    """Convert hex color to RGB tuple."""
     normalized = _normalize_hex_color(value)
     if normalized is None:
         raise ValueError("Invalid hex color")
@@ -122,6 +133,7 @@ def _hex_to_rgb(value: str) -> tuple[int, int, int]:
 
 
 def _coerce_rgb_channel(value: Any) -> int | None:
+    """Parse and validate one RGB channel (0..255)."""
     try:
         channel = int(value)
     except (TypeError, ValueError):
@@ -132,6 +144,7 @@ def _coerce_rgb_channel(value: Any) -> int | None:
 
 
 def _parse_rgb_color_value(value: Any) -> tuple[int, int, int] | None:
+    """Parse RGB values from selector payloads or hex text input."""
     if isinstance(value, (list, tuple)) and len(value) == 3:
         channels = [_coerce_rgb_channel(channel) for channel in value]
         if all(channel is not None for channel in channels):
@@ -168,6 +181,7 @@ def _parse_rgb_color_value(value: Any) -> tuple[int, int, int] | None:
 
 @dataclass(frozen=True)
 class _ZhaButtonSignature:
+    """Captured ZHA button signature used to match future events."""
     ieee: str
     endpoint_id: int
     command: str
@@ -176,6 +190,7 @@ class _ZhaButtonSignature:
 
 
 def _signature_from_zha_event(ieee: str, data: dict[str, Any]) -> _ZhaButtonSignature:
+    """Build a normalized button signature from one captured `zha_event` payload."""
     endpoint_id = data.get(CONF_ENDPOINT_ID)
     command = data.get(CONF_COMMAND)
 
@@ -192,6 +207,7 @@ def _signature_from_zha_event(ieee: str, data: dict[str, Any]) -> _ZhaButtonSign
 
 
 def _zha_ieee_from_device_entry(device_entry: dr.DeviceEntry) -> str | None:
+    """Extract ZHA IEEE identifier from a selected device registry entry."""
     for domain, identifier in device_entry.identifiers:
         if domain == "zha":
             return str(identifier)
@@ -199,6 +215,7 @@ def _zha_ieee_from_device_entry(device_entry: dr.DeviceEntry) -> str | None:
 
 
 def _entry_value(entry: ConfigEntry, key: str, default: Any | None = None) -> Any:
+    """Read a value from entry options first, then data."""
     if key in entry.options:
         return entry.options[key]
     return entry.data.get(key, default)
@@ -230,6 +247,7 @@ def _normalize_target_entity_ids(value: Any) -> list[str]:
 
 
 def _entry_target_entity_ids(entry: ConfigEntry) -> list[str]:
+    """Return normalized target entities from a config entry (with legacy fallback)."""
     targets = _entry_value(entry, CONF_TARGET_ENTITY_IDS, None)
     normalized = _normalize_target_entity_ids(targets)
     if normalized:
@@ -240,6 +258,7 @@ def _entry_target_entity_ids(entry: ConfigEntry) -> list[str]:
 
 
 def _light_entity_selector(*, multiple: bool) -> selector.EntitySelector:
+    """Return a light entity selector with compatibility for older HA signatures."""
     try:
         config = selector.EntitySelectorConfig(domain=LIGHT_DOMAIN, multiple=multiple)
     except TypeError:
@@ -248,6 +267,7 @@ def _light_entity_selector(*, multiple: bool) -> selector.EntitySelector:
 
 
 def _max_parallel_calls_selector() -> selector.NumberSelector:
+    """Return selector for integration-wide max parallel service calls."""
     mode = getattr(selector.NumberSelectorMode, "BOX", selector.NumberSelectorMode.SLIDER)
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
@@ -264,12 +284,13 @@ def _step_mode_field() -> Any:
     return vol.In(
         {
             STEP_MODE_WHITE_TEMP: "White & temperature",
-            STEP_MODE_COLOR: "Color",
+            STEP_MODE_COLOR: "Colour",
         }
     )
 
 
 def _temp_pct_selector() -> selector.NumberSelector:
+    """Return selector for white temperature percentage in 0..100 range."""
     return selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=0,
@@ -311,27 +332,82 @@ def _boolean_field() -> Any:
         return bool
 
 
+def _step_defaults(step_num: int, total_steps: int, existing: Any | None = None) -> dict[str, Any]:
+    """Return normalized default values for one step."""
+    existing_step = existing if isinstance(existing, dict) else {}
+    label = str(existing_step.get(CONF_STEP_LABEL) or f"Step {step_num}")
+
+    try:
+        brightness_pct = int(existing_step.get(CONF_STEP_BRIGHTNESS_PCT))
+    except (TypeError, ValueError):
+        brightness_pct = _default_brightness_pct(step_num, total_steps)
+    brightness_pct = max(1, min(100, brightness_pct))
+
+    mode = _normalize_step_mode(existing_step.get(CONF_STEP_MODE))
+
+    try:
+        temp_pct = int(existing_step.get(CONF_STEP_TEMP_PCT, DEFAULT_STEP_TEMP_PCT))
+    except (TypeError, ValueError):
+        temp_pct = DEFAULT_STEP_TEMP_PCT
+    temp_pct = max(0, min(100, temp_pct))
+
+    color_hex = _normalize_hex_color(existing_step.get(CONF_STEP_COLOR_HEX))
+    if color_hex is None:
+        color_hex = DEFAULT_STEP_COLOR_HEX
+
+    rgb = _parse_rgb_color_value(existing_step.get(CONF_STEP_COLOR_RGB))
+    if rgb is None:
+        rgb = _parse_rgb_color_value(color_hex)
+    if rgb is None:
+        rgb = tuple(DEFAULT_STEP_COLOR_RGB)
+
+    return {
+        CONF_STEP_LABEL: label,
+        CONF_STEP_BRIGHTNESS_PCT: brightness_pct,
+        CONF_STEP_MODE: mode,
+        CONF_STEP_TEMP_PCT: temp_pct,
+        CONF_STEP_COLOR_HEX: color_hex,
+        CONF_STEP_COLOR_RGB: [rgb[0], rgb[1], rgb[2]],
+    }
+
+
+def _build_step_defaults(existing_steps: list[dict[str, Any]], on_steps: int) -> list[dict[str, Any]]:
+    """Return defaults list sized exactly to selected step count."""
+    defaults: list[dict[str, Any]] = []
+    for step_num in range(1, on_steps + 1):
+        existing = existing_steps[step_num - 1] if step_num - 1 < len(existing_steps) else None
+        defaults.append(_step_defaults(step_num, on_steps, existing))
+    return defaults
+
+
 class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Light Cycle Controller."""
 
     VERSION = 2
 
     def __init__(self) -> None:
+        # Step A fields (instance basics).
         self._instance_name: str | None = None
         self._target_entity_ids: list[str] = []
 
+        # Step B/C fields (remote selection and captured device identity).
         self._remote_device_id: str | None = None
         self._remote_device_name: str | None = None
         self._remote_ieee: str | None = None
 
+        # Capture-step listener lifecycle handles.
         self._capture_future: asyncio.Future[dict[str, Any]] | None = None
         self._capture_unsub: Callable[[], None] | None = None
 
+        # Captured button signature and pending global setting updates.
         self._signature: _ZhaButtonSignature | None = None
         self._on_steps: int | None = None
         self._pending_max_parallel_calls: int | None = None
+        self._draft_steps: list[dict[str, Any]] = []
+        self._details_step_index: int = 1
 
     async def async_step_user(self, user_input: ConfigType | None = None):
+        """Step A: capture instance name, targets, and initial global parallelism."""
         errors: dict[str, str] = {}
         global_settings = await async_get_settings(self.hass)
         default_max_parallel_calls = int(
@@ -340,6 +416,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         is_first_entry = len(self.hass.config_entries.async_entries(DOMAIN)) == 0
 
         if user_input is not None:
+            # Parse user input and normalize entity selection output.
             name = user_input[CONF_NAME].strip()
             target_entity_ids = _normalize_target_entity_ids(
                 user_input.get(CONF_TARGET_ENTITY_IDS)
@@ -363,6 +440,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             elif not target_entity_ids:
                 errors[CONF_TARGET_ENTITY_IDS] = "target_required"
             else:
+                # Persist validated values on this flow instance for next wizard steps.
                 if is_first_entry and max_parallel_calls is not None:
                     self._pending_max_parallel_calls = max_parallel_calls
                 self._instance_name = name
@@ -391,6 +469,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_device(self, user_input: ConfigType | None = None):
+        """Step B: select the ZHA device to capture and react to."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -405,6 +484,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                 if not ieee:
                     errors["base"] = "not_zha_device"
                 else:
+                    # Store both display name (UX text) and IEEE (event matching key).
                     self._remote_device_id = device_id
                     self._remote_device_name = device_entry.name_by_user or device_entry.name
                     self._remote_ieee = ieee
@@ -422,6 +502,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @callback
     def _async_reset_capture(self) -> None:
+        """Clear capture listener/future so capture can be restarted safely."""
         if self._capture_unsub is not None:
             self._capture_unsub()
             self._capture_unsub = None
@@ -429,6 +510,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @callback
     def _async_ensure_capture_listener(self) -> None:
+        """Attach one-shot `zha_event` listener used by capture step."""
         if self._remote_ieee is None:
             return
         if self._capture_future is None or self._capture_future.done():
@@ -455,6 +537,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._capture_unsub = self.hass.bus.async_listen(EVENT_ZHA_EVENT, _handle_event)
 
     async def async_step_capture(self, user_input: ConfigType | None = None):
+        """Step C: after submit, wait for the next matching physical button press."""
         errors: dict[str, str] = {}
 
         if self._remote_ieee is None:
@@ -462,6 +545,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None and not errors:
             try:
+                # Re-arm listener each attempt to ensure stale futures are not reused.
                 self._async_reset_capture()
                 self._async_ensure_capture_listener()
                 assert self._capture_future is not None
@@ -477,6 +561,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 return await self.async_step_steps_count()
             finally:
+                # Keep listener active only while waiting for a capture result.
                 if errors:
                     self._async_reset_capture()
 
@@ -490,6 +575,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_steps_count(self, user_input: ConfigType | None = None):
+        """Step D1: collect number of On steps for dynamic form generation."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -502,6 +588,8 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_step_count"
                 else:
                     self._on_steps = on_steps
+                    self._draft_steps = _build_step_defaults([], on_steps)
+                    self._details_step_index = 1
                     return await self.async_step_steps()
 
         schema = vol.Schema(
@@ -523,20 +611,26 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="steps_count", data_schema=schema, errors=errors)
 
     async def async_step_steps(self, user_input: ConfigType | None = None):
+        """Step D2: collect per-step labels, brightness, and mode."""
         errors: dict[str, str] = {}
 
         assert self._on_steps is not None
         on_steps = self._on_steps
+        if len(self._draft_steps) != on_steps:
+            self._draft_steps = _build_step_defaults(self._draft_steps, on_steps)
 
         if user_input is not None:
+            # Build the base step payload list from dynamic keys.
             steps: list[dict[str, Any]] = []
             for step_num in range(1, on_steps + 1):
                 label_key = _step_label_key(step_num)
                 brightness_key = _step_brightness_key(step_num)
                 mode_key = _step_mode_key(step_num)
-                temp_key = _step_temp_pct_key(step_num)
-                color_hex_key = _step_color_hex_key(step_num)
-                color_rgb_key = _step_color_rgb_key(step_num)
+                existing = (
+                    self._draft_steps[step_num - 1]
+                    if step_num - 1 < len(self._draft_steps)
+                    else _step_defaults(step_num, on_steps)
+                )
 
                 label = str(user_input.get(label_key, "")).strip()
                 if not label:
@@ -551,85 +645,36 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 brightness_pct = max(1, min(100, brightness_pct))
                 mode = _normalize_step_mode(user_input.get(mode_key))
-                step_data: dict[str, Any] = {
-                    CONF_STEP_LABEL: label,
-                    CONF_STEP_BRIGHTNESS_PCT: brightness_pct,
-                    CONF_STEP_MODE: mode,
-                }
-
-                if mode == STEP_MODE_WHITE_TEMP:
-                    try:
-                        temp_pct = int(user_input[temp_key])
-                    except (TypeError, ValueError, KeyError):
-                        errors[temp_key] = "invalid_temp_pct"
-                        continue
-
-                    step_data[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
-                    step_data[CONF_STEP_COLOR_HEX] = DEFAULT_STEP_COLOR_HEX
-                    step_data[CONF_STEP_COLOR_RGB] = list(DEFAULT_STEP_COLOR_RGB)
-                else:
-                    color_hex = _normalize_hex_color(user_input.get(color_hex_key))
-                    rgb_value = _parse_rgb_color_value(user_input.get(color_rgb_key))
-
-                    if color_hex is not None:
-                        rgb = _hex_to_rgb(color_hex)
-                    elif rgb_value is not None:
-                        rgb = rgb_value
-                        color_hex = _rgb_to_hex(rgb)
-                    else:
-                        errors[color_hex_key] = "invalid_color"
-                        continue
-
-                    step_data[CONF_STEP_TEMP_PCT] = DEFAULT_STEP_TEMP_PCT
-                    step_data[CONF_STEP_COLOR_HEX] = color_hex
-                    step_data[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+                step_data: dict[str, Any] = dict(existing)
+                step_data[CONF_STEP_LABEL] = label
+                step_data[CONF_STEP_BRIGHTNESS_PCT] = brightness_pct
+                step_data[CONF_STEP_MODE] = mode
 
                 steps.append(step_data)
 
             if not errors:
-                assert self._instance_name is not None
-                assert self._target_entity_ids
-                assert self._remote_device_id is not None
-                assert self._remote_ieee is not None
-                assert self._signature is not None
-
-                target_signature = ",".join(sorted(self._target_entity_ids))
-                unique_id = (
-                    f"{self._remote_ieee}:{self._signature.endpoint_id}:{self._signature.command}"
-                    f":{target_signature}"
-                )
-                await self.async_set_unique_id(unique_id)
-                self._abort_if_unique_id_configured()
-
-                data = {
-                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
-                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
-                    CONF_REMOTE_DEVICE_ID: self._remote_device_id,
-                    CONF_REMOTE_IEEE: self._remote_ieee,
-                    CONF_ENDPOINT_ID: self._signature.endpoint_id,
-                    CONF_COMMAND: self._signature.command,
-                    CONF_CLUSTER_ID: self._signature.cluster_id,
-                    CONF_ARGS: self._signature.args,
-                    CONF_STEPS: steps,
-                }
-                if self._pending_max_parallel_calls is not None:
-                    await async_set_max_parallel_calls(
-                        self.hass, self._pending_max_parallel_calls
-                    )
-                return self.async_create_entry(title=self._instance_name, data=data)
+                self._draft_steps = steps
+                self._details_step_index = 1
+                return await self.async_step_steps_details()
 
         schema_dict: dict[Any, Any] = {}
-        color_rgb_field, rgb_field_is_text = _color_rgb_selector_field()
         for step_num in range(1, on_steps + 1):
+            existing = (
+                self._draft_steps[step_num - 1]
+                if step_num - 1 < len(self._draft_steps)
+                else _step_defaults(step_num, on_steps)
+            )
+            # Generate base fields for each configured On step.
             schema_dict[
                 vol.Required(
-                    _step_label_key(step_num), default=f"Step {step_num}"
+                    _step_label_key(step_num),
+                    default=str(existing.get(CONF_STEP_LABEL, f"Step {step_num}")),
                 )
             ] = selector.TextSelector()
             schema_dict[
                 vol.Required(
                     _step_brightness_key(step_num),
-                    default=_default_brightness_pct(step_num, on_steps),
+                    default=int(existing.get(CONF_STEP_BRIGHTNESS_PCT, _default_brightness_pct(step_num, on_steps))),
                 )
             ] = selector.NumberSelector(
                 selector.NumberSelectorConfig(
@@ -643,41 +688,148 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             schema_dict[
                 vol.Required(
                     _step_mode_key(step_num),
-                    default=STEP_MODE_WHITE_TEMP,
+                    default=_normalize_step_mode(existing.get(CONF_STEP_MODE)),
                 )
             ] = _step_mode_field()
-            schema_dict[
-                vol.Required(
-                    _step_temp_pct_key(step_num),
-                    default=DEFAULT_STEP_TEMP_PCT,
-                )
-            ] = _temp_pct_selector()
-            schema_dict[
-                vol.Required(
-                    _step_color_rgb_key(step_num),
-                    default=(
-                        DEFAULT_STEP_COLOR_HEX
-                        if rgb_field_is_text
-                        else list(DEFAULT_STEP_COLOR_RGB)
-                    ),
-                )
-            ] = color_rgb_field
-            schema_dict[
-                vol.Required(
-                    _step_color_hex_key(step_num),
-                    default=DEFAULT_STEP_COLOR_HEX,
-                )
-            ] = selector.TextSelector()
 
         return self.async_show_form(
             step_id="steps",
             data_schema=vol.Schema(schema_dict),
             errors=errors,
+            description_placeholders={"on_steps": str(on_steps)},
+        )
+
+    async def async_step_steps_details(self, user_input: ConfigType | None = None):
+        """Step D3: collect mode-specific fields one step at a time."""
+        errors: dict[str, str] = {}
+
+        assert self._on_steps is not None
+        on_steps = self._on_steps
+        if len(self._draft_steps) != on_steps:
+            self._draft_steps = _build_step_defaults(self._draft_steps, on_steps)
+
+        step_num = max(1, min(on_steps, self._details_step_index))
+        step_index = step_num - 1
+        step_data = dict(self._draft_steps[step_index])
+        mode = _normalize_step_mode(step_data.get(CONF_STEP_MODE))
+
+        temp_key = _step_temp_pct_key(step_num)
+        color_hex_key = _step_color_hex_key(step_num)
+        color_rgb_key = _step_color_rgb_key(step_num)
+
+        if user_input is not None:
+            if mode == STEP_MODE_WHITE_TEMP:
+                try:
+                    temp_pct = int(user_input[temp_key])
+                except (TypeError, ValueError, KeyError):
+                    errors[temp_key] = "invalid_temp_pct"
+                else:
+                    step_data[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
+                    step_data[CONF_STEP_COLOR_HEX] = DEFAULT_STEP_COLOR_HEX
+                    step_data[CONF_STEP_COLOR_RGB] = list(DEFAULT_STEP_COLOR_RGB)
+            else:
+                color_hex = _normalize_hex_color(user_input.get(color_hex_key))
+                rgb_value = _parse_rgb_color_value(user_input.get(color_rgb_key))
+
+                if color_hex is not None:
+                    rgb = _hex_to_rgb(color_hex)
+                elif rgb_value is not None:
+                    rgb = rgb_value
+                    color_hex = _rgb_to_hex(rgb)
+                else:
+                    errors[color_hex_key] = "invalid_color"
+
+                if not errors:
+                    step_data[CONF_STEP_TEMP_PCT] = DEFAULT_STEP_TEMP_PCT
+                    step_data[CONF_STEP_COLOR_HEX] = color_hex
+                    step_data[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+
+            if not errors:
+                self._draft_steps[step_index] = step_data
+                if step_num < on_steps:
+                    self._details_step_index = step_num + 1
+                    return await self.async_step_steps_details()
+
+                assert self._instance_name is not None
+                assert self._target_entity_ids
+                assert self._remote_device_id is not None
+                assert self._remote_ieee is not None
+                assert self._signature is not None
+
+                target_signature = ",".join(sorted(self._target_entity_ids))
+                unique_id = (
+                    f"{self._remote_ieee}:{self._signature.endpoint_id}:{self._signature.command}"
+                    f":{target_signature}"
+                )
+                # Unique ID prevents duplicate entries for same remote signature + target set.
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
+
+                data = {
+                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
+                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
+                    CONF_REMOTE_DEVICE_ID: self._remote_device_id,
+                    CONF_REMOTE_IEEE: self._remote_ieee,
+                    CONF_ENDPOINT_ID: self._signature.endpoint_id,
+                    CONF_COMMAND: self._signature.command,
+                    CONF_CLUSTER_ID: self._signature.cluster_id,
+                    CONF_ARGS: self._signature.args,
+                    CONF_STEPS: self._draft_steps,
+                }
+                if self._pending_max_parallel_calls is not None:
+                    # Persist the integration-wide setting from first-entry setup step.
+                    await async_set_max_parallel_calls(
+                        self.hass, self._pending_max_parallel_calls
+                    )
+                return self.async_create_entry(title=self._instance_name, data=data)
+
+        schema_dict: dict[Any, Any] = {}
+        if mode == STEP_MODE_WHITE_TEMP:
+            schema_dict[
+                vol.Required(
+                    temp_key,
+                    default=int(step_data.get(CONF_STEP_TEMP_PCT, DEFAULT_STEP_TEMP_PCT)),
+                )
+            ] = _temp_pct_selector()
+        else:
+            color_rgb_field, rgb_field_is_text = _color_rgb_selector_field()
+            default_color_hex = _normalize_hex_color(step_data.get(CONF_STEP_COLOR_HEX))
+            if default_color_hex is None:
+                default_color_hex = DEFAULT_STEP_COLOR_HEX
+            default_rgb = _parse_rgb_color_value(step_data.get(CONF_STEP_COLOR_RGB))
+            if default_rgb is None:
+                default_rgb = _parse_rgb_color_value(default_color_hex)
+            if default_rgb is None:
+                default_rgb = tuple(DEFAULT_STEP_COLOR_RGB)
+
+            schema_dict[
+                vol.Required(
+                    color_rgb_key,
+                    default=(
+                        default_color_hex
+                        if rgb_field_is_text
+                        else [default_rgb[0], default_rgb[1], default_rgb[2]]
+                    ),
+                )
+            ] = color_rgb_field
+            schema_dict[
+                vol.Required(
+                    color_hex_key,
+                    default=default_color_hex,
+                )
+            ] = selector.TextSelector()
+
+        return self.async_show_form(
+            step_id="steps_details",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={"step": str(step_num), "on_steps": str(on_steps)},
         )
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return options flow handler for an existing config entry."""
         return LightCycleOptionsFlowHandler(config_entry)
 
 
@@ -685,12 +837,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
     """Handle options for an existing Light Cycle Controller entry."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
+        # Keep compatibility with HA versions where OptionsFlow init signatures differ.
         try:
             super().__init__(config_entry)
         except TypeError:
             super().__init__()
         self._config_entry = config_entry
 
+        # Seed editable values from existing entry/options.
         self._target_entity_ids: list[str] = _entry_target_entity_ids(config_entry)
         self._remote_device_id: str | None = _entry_value(
             config_entry, CONF_REMOTE_DEVICE_ID, None
@@ -706,8 +860,11 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         self._existing_steps: list[dict[str, Any]] = list(
             _entry_value(config_entry, CONF_STEPS, [])
         )
+        self._draft_steps: list[dict[str, Any]] = list(self._existing_steps)
+        self._details_step_index: int = 1
 
     async def async_step_init(self, user_input: ConfigType | None = None):
+        """Options step A: edit targets, remote, step-count, and global parallelism."""
         errors: dict[str, str] = {}
         global_settings = await async_get_settings(self.hass)
         default_max_parallel_calls = int(
@@ -715,6 +872,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         )
 
         if user_input is not None:
+            # Parse and validate all editable options from the first options page.
             target_entity_ids = _normalize_target_entity_ids(
                 user_input.get(CONF_TARGET_ENTITY_IDS)
             )
@@ -756,6 +914,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     max_parallel_calls,
                 )
                 if remote_device_id != self._remote_device_id:
+                    # Device change always requires a fresh button capture.
                     recapture = True
 
                 device_registry = dr.async_get(self.hass)
@@ -767,6 +926,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     if not ieee:
                         errors["base"] = "not_zha_device"
                     else:
+                        # Persist normalized values for follow-up capture/steps pages.
                         self._target_entity_ids = target_entity_ids
                         self._remote_device_id = remote_device_id
                         self._remote_device_name = (
@@ -775,14 +935,18 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                         self._remote_ieee = ieee
                         self._on_steps = on_steps
                         self._pending_max_parallel_calls = max_parallel_calls
+                        self._draft_steps = _build_step_defaults(self._existing_steps, on_steps)
+                        self._details_step_index = 1
 
                         if recapture:
+                            # Clear prior capture and proceed to capture page.
                             self._signature = None
                             return await self.async_step_capture()
 
                         endpoint_id = _entry_value(self._config_entry, CONF_ENDPOINT_ID)
                         command = _entry_value(self._config_entry, CONF_COMMAND)
                         if endpoint_id is None or command is None:
+                            # Missing historical signature means we must capture again.
                             return await self.async_step_capture()
 
                         self._signature = _ZhaButtonSignature(
@@ -838,12 +1002,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         )
 
     async def async_step_capture(self, user_input: ConfigType | None = None):
+        """Options step B: capture replacement button signature for this entry."""
         errors: dict[str, str] = {}
 
         if self._remote_ieee is None:
             errors["base"] = "not_zha_device"
 
         if user_input is not None and not errors:
+            # Create one-shot listener for the next matching event after submit.
             future: asyncio.Future[dict[str, Any]] = self.hass.loop.create_future()
 
             @callback
@@ -883,19 +1049,25 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         )
 
     async def async_step_steps(self, user_input: ConfigType | None = None):
+        """Options step C: edit step labels, brightness, and mode only."""
         errors: dict[str, str] = {}
 
         on_steps = self._on_steps or len(self._existing_steps) or 3
+        if len(self._draft_steps) != on_steps:
+            self._draft_steps = _build_step_defaults(self._draft_steps or self._existing_steps, on_steps)
 
         if user_input is not None:
+            # Rebuild base step fields only; mode-specific values come in next page.
             steps: list[dict[str, Any]] = []
             for step_num in range(1, on_steps + 1):
                 label_key = _step_label_key(step_num)
                 brightness_key = _step_brightness_key(step_num)
                 mode_key = _step_mode_key(step_num)
-                temp_key = _step_temp_pct_key(step_num)
-                color_hex_key = _step_color_hex_key(step_num)
-                color_rgb_key = _step_color_rgb_key(step_num)
+                existing = (
+                    self._draft_steps[step_num - 1]
+                    if step_num - 1 < len(self._draft_steps)
+                    else _step_defaults(step_num, on_steps)
+                )
 
                 label = str(user_input.get(label_key, "")).strip()
                 if not label:
@@ -910,119 +1082,33 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
 
                 brightness_pct = max(1, min(100, brightness_pct))
                 mode = _normalize_step_mode(user_input.get(mode_key))
-                step_data: dict[str, Any] = {
-                    CONF_STEP_LABEL: label,
-                    CONF_STEP_BRIGHTNESS_PCT: brightness_pct,
-                    CONF_STEP_MODE: mode,
-                }
-
-                if mode == STEP_MODE_WHITE_TEMP:
-                    try:
-                        temp_pct = int(user_input[temp_key])
-                    except (TypeError, ValueError, KeyError):
-                        errors[temp_key] = "invalid_temp_pct"
-                        continue
-
-                    step_data[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
-                    step_data[CONF_STEP_COLOR_HEX] = DEFAULT_STEP_COLOR_HEX
-                    step_data[CONF_STEP_COLOR_RGB] = list(DEFAULT_STEP_COLOR_RGB)
-                else:
-                    color_hex = _normalize_hex_color(user_input.get(color_hex_key))
-                    rgb_value = _parse_rgb_color_value(user_input.get(color_rgb_key))
-
-                    if color_hex is not None:
-                        rgb = _hex_to_rgb(color_hex)
-                    elif rgb_value is not None:
-                        rgb = rgb_value
-                        color_hex = _rgb_to_hex(rgb)
-                    else:
-                        errors[color_hex_key] = "invalid_color"
-                        continue
-
-                    step_data[CONF_STEP_TEMP_PCT] = DEFAULT_STEP_TEMP_PCT
-                    step_data[CONF_STEP_COLOR_HEX] = color_hex
-                    step_data[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+                step_data: dict[str, Any] = dict(existing)
+                step_data[CONF_STEP_LABEL] = label
+                step_data[CONF_STEP_BRIGHTNESS_PCT] = brightness_pct
+                step_data[CONF_STEP_MODE] = mode
 
                 steps.append(step_data)
 
             if not errors:
-                assert self._remote_ieee is not None
-                assert self._signature is not None
-
-                options = {
-                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
-                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
-                    CONF_REMOTE_DEVICE_ID: self._remote_device_id,
-                    CONF_REMOTE_IEEE: self._remote_ieee,
-                    CONF_ENDPOINT_ID: self._signature.endpoint_id,
-                    CONF_COMMAND: self._signature.command,
-                    CONF_CLUSTER_ID: self._signature.cluster_id,
-                    CONF_ARGS: self._signature.args,
-                    CONF_STEPS: steps,
-                }
-                if self._pending_max_parallel_calls is not None:
-                    await async_set_max_parallel_calls(
-                        self.hass, self._pending_max_parallel_calls
-                    )
-                LOGGER.info(
-                    "Saving options for entry %s: steps=%s brightness=%s",
-                    self._config_entry.entry_id,
-                    len(steps),
-                    [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in steps],
-                )
-                return self.async_create_entry(title="", data=options)
+                self._draft_steps = steps
+                self._details_step_index = 1
+                return await self.async_step_steps_details()
 
         schema_dict: dict[Any, Any] = {}
-        color_rgb_field, rgb_field_is_text = _color_rgb_selector_field()
         for step_num in range(1, on_steps + 1):
             existing = (
-                self._existing_steps[step_num - 1]
-                if step_num - 1 < len(self._existing_steps)
-                else None
+                self._draft_steps[step_num - 1]
+                if step_num - 1 < len(self._draft_steps)
+                else _step_defaults(step_num, on_steps)
             )
-            default_label = (
-                str(existing.get(CONF_STEP_LABEL))
-                if isinstance(existing, dict) and existing.get(CONF_STEP_LABEL)
-                else f"Step {step_num}"
-            )
-            default_brightness = (
-                int(existing.get(CONF_STEP_BRIGHTNESS_PCT))
-                if isinstance(existing, dict) and existing.get(CONF_STEP_BRIGHTNESS_PCT)
-                else _default_brightness_pct(step_num, on_steps)
-            )
-            default_mode = (
-                _normalize_step_mode(existing.get(CONF_STEP_MODE))
-                if isinstance(existing, dict)
-                else DEFAULT_STEP_MODE
-            )
-            default_temp_pct = (
-                int(existing.get(CONF_STEP_TEMP_PCT))
-                if isinstance(existing, dict)
-                and existing.get(CONF_STEP_TEMP_PCT) is not None
-                else DEFAULT_STEP_TEMP_PCT
-            )
-            default_color_hex = (
-                _normalize_hex_color(existing.get(CONF_STEP_COLOR_HEX))
-                if isinstance(existing, dict)
-                else None
-            )
-            if default_color_hex is None:
-                default_color_hex = DEFAULT_STEP_COLOR_HEX
-            default_rgb = (
-                _parse_rgb_color_value(existing.get(CONF_STEP_COLOR_RGB))
-                if isinstance(existing, dict)
-                else None
-            )
-            if default_rgb is None:
-                default_rgb = _parse_rgb_color_value(default_color_hex)
-            if default_rgb is None:
-                default_rgb = tuple(DEFAULT_STEP_COLOR_RGB)
-
-            schema_dict[vol.Required(_step_label_key(step_num), default=default_label)] = (
+            schema_dict[vol.Required(_step_label_key(step_num), default=str(existing.get(CONF_STEP_LABEL, f"Step {step_num}")))] = (
                 selector.TextSelector()
             )
             schema_dict[
-                vol.Required(_step_brightness_key(step_num), default=default_brightness)
+                vol.Required(
+                    _step_brightness_key(step_num),
+                    default=int(existing.get(CONF_STEP_BRIGHTNESS_PCT, _default_brightness_pct(step_num, on_steps))),
+                )
             ] = selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=1,
@@ -1035,18 +1121,116 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             schema_dict[
                 vol.Required(
                     _step_mode_key(step_num),
-                    default=default_mode,
+                    default=_normalize_step_mode(existing.get(CONF_STEP_MODE)),
                 )
             ] = _step_mode_field()
+
+        return self.async_show_form(
+            step_id="steps",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={"on_steps": str(on_steps)},
+        )
+
+    async def async_step_steps_details(self, user_input: ConfigType | None = None):
+        """Options step D: edit mode-specific fields one step at a time."""
+        errors: dict[str, str] = {}
+
+        on_steps = self._on_steps or len(self._existing_steps) or 3
+        if len(self._draft_steps) != on_steps:
+            self._draft_steps = _build_step_defaults(self._draft_steps or self._existing_steps, on_steps)
+
+        step_num = max(1, min(on_steps, self._details_step_index))
+        step_index = step_num - 1
+        step_data = dict(self._draft_steps[step_index])
+        mode = _normalize_step_mode(step_data.get(CONF_STEP_MODE))
+
+        temp_key = _step_temp_pct_key(step_num)
+        color_hex_key = _step_color_hex_key(step_num)
+        color_rgb_key = _step_color_rgb_key(step_num)
+
+        if user_input is not None:
+            if mode == STEP_MODE_WHITE_TEMP:
+                try:
+                    temp_pct = int(user_input[temp_key])
+                except (TypeError, ValueError, KeyError):
+                    errors[temp_key] = "invalid_temp_pct"
+                else:
+                    step_data[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
+                    step_data[CONF_STEP_COLOR_HEX] = DEFAULT_STEP_COLOR_HEX
+                    step_data[CONF_STEP_COLOR_RGB] = list(DEFAULT_STEP_COLOR_RGB)
+            else:
+                color_hex = _normalize_hex_color(user_input.get(color_hex_key))
+                rgb_value = _parse_rgb_color_value(user_input.get(color_rgb_key))
+
+                if color_hex is not None:
+                    rgb = _hex_to_rgb(color_hex)
+                elif rgb_value is not None:
+                    rgb = rgb_value
+                    color_hex = _rgb_to_hex(rgb)
+                else:
+                    errors[color_hex_key] = "invalid_color"
+
+                if not errors:
+                    step_data[CONF_STEP_TEMP_PCT] = DEFAULT_STEP_TEMP_PCT
+                    step_data[CONF_STEP_COLOR_HEX] = color_hex
+                    step_data[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+
+            if not errors:
+                self._draft_steps[step_index] = step_data
+                if step_num < on_steps:
+                    self._details_step_index = step_num + 1
+                    return await self.async_step_steps_details()
+
+                assert self._remote_ieee is not None
+                assert self._signature is not None
+
+                options = {
+                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
+                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
+                    CONF_REMOTE_DEVICE_ID: self._remote_device_id,
+                    CONF_REMOTE_IEEE: self._remote_ieee,
+                    CONF_ENDPOINT_ID: self._signature.endpoint_id,
+                    CONF_COMMAND: self._signature.command,
+                    CONF_CLUSTER_ID: self._signature.cluster_id,
+                    CONF_ARGS: self._signature.args,
+                    CONF_STEPS: self._draft_steps,
+                }
+                if self._pending_max_parallel_calls is not None:
+                    # Save integration-wide parallelism when changed from options flow.
+                    await async_set_max_parallel_calls(
+                        self.hass, self._pending_max_parallel_calls
+                    )
+                LOGGER.info(
+                    "Saving options for entry %s: steps=%s brightness=%s",
+                    self._config_entry.entry_id,
+                    len(self._draft_steps),
+                    [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._draft_steps],
+                )
+                return self.async_create_entry(title="", data=options)
+
+        schema_dict: dict[Any, Any] = {}
+        if mode == STEP_MODE_WHITE_TEMP:
             schema_dict[
                 vol.Required(
-                    _step_temp_pct_key(step_num),
-                    default=max(0, min(100, default_temp_pct)),
+                    temp_key,
+                    default=int(step_data.get(CONF_STEP_TEMP_PCT, DEFAULT_STEP_TEMP_PCT)),
                 )
             ] = _temp_pct_selector()
+        else:
+            color_rgb_field, rgb_field_is_text = _color_rgb_selector_field()
+            default_color_hex = _normalize_hex_color(step_data.get(CONF_STEP_COLOR_HEX))
+            if default_color_hex is None:
+                default_color_hex = DEFAULT_STEP_COLOR_HEX
+            default_rgb = _parse_rgb_color_value(step_data.get(CONF_STEP_COLOR_RGB))
+            if default_rgb is None:
+                default_rgb = _parse_rgb_color_value(default_color_hex)
+            if default_rgb is None:
+                default_rgb = tuple(DEFAULT_STEP_COLOR_RGB)
+
             schema_dict[
                 vol.Required(
-                    _step_color_rgb_key(step_num),
+                    color_rgb_key,
                     default=(
                         default_color_hex
                         if rgb_field_is_text
@@ -1056,13 +1240,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             ] = color_rgb_field
             schema_dict[
                 vol.Required(
-                    _step_color_hex_key(step_num),
+                    color_hex_key,
                     default=default_color_hex,
                 )
             ] = selector.TextSelector()
 
         return self.async_show_form(
-            step_id="steps",
+            step_id="steps_details",
             data_schema=vol.Schema(schema_dict),
             errors=errors,
+            description_placeholders={"step": str(step_num), "on_steps": str(on_steps)},
         )

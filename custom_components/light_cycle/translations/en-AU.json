@@ -65,29 +65,29 @@
         "description": "Configure mode-specific fields for Step {step} of {on_steps}. White & temperature shows only temperature. Colour shows only colour fields.",
         "data": {
           "step_1_temp_pct": "Step 1 white temperature (%)",
-          "step_1_color_rgb": "Step 1 color",
-          "step_1_color_hex": "Step 1 color (hex)",
+          "step_1_color_rgb": "Step 1 colour",
+          "step_1_color_hex": "Step 1 colour (hex)",
           "step_2_temp_pct": "Step 2 white temperature (%)",
-          "step_2_color_rgb": "Step 2 color",
-          "step_2_color_hex": "Step 2 color (hex)",
+          "step_2_color_rgb": "Step 2 colour",
+          "step_2_color_hex": "Step 2 colour (hex)",
           "step_3_temp_pct": "Step 3 white temperature (%)",
-          "step_3_color_rgb": "Step 3 color",
-          "step_3_color_hex": "Step 3 color (hex)",
+          "step_3_color_rgb": "Step 3 colour",
+          "step_3_color_hex": "Step 3 colour (hex)",
           "step_4_temp_pct": "Step 4 white temperature (%)",
-          "step_4_color_rgb": "Step 4 color",
-          "step_4_color_hex": "Step 4 color (hex)",
+          "step_4_color_rgb": "Step 4 colour",
+          "step_4_color_hex": "Step 4 colour (hex)",
           "step_5_temp_pct": "Step 5 white temperature (%)",
-          "step_5_color_rgb": "Step 5 color",
-          "step_5_color_hex": "Step 5 color (hex)",
+          "step_5_color_rgb": "Step 5 colour",
+          "step_5_color_hex": "Step 5 colour (hex)",
           "step_6_temp_pct": "Step 6 white temperature (%)",
-          "step_6_color_rgb": "Step 6 color",
-          "step_6_color_hex": "Step 6 color (hex)",
+          "step_6_color_rgb": "Step 6 colour",
+          "step_6_color_hex": "Step 6 colour (hex)",
           "step_7_temp_pct": "Step 7 white temperature (%)",
-          "step_7_color_rgb": "Step 7 color",
-          "step_7_color_hex": "Step 7 color (hex)",
+          "step_7_color_rgb": "Step 7 colour",
+          "step_7_color_hex": "Step 7 colour (hex)",
           "step_8_temp_pct": "Step 8 white temperature (%)",
-          "step_8_color_rgb": "Step 8 color",
-          "step_8_color_hex": "Step 8 color (hex)"
+          "step_8_color_rgb": "Step 8 colour",
+          "step_8_color_hex": "Step 8 colour (hex)"
         }
       }
     },
@@ -102,7 +102,7 @@
       "label_required": "Label is required.",
       "name_required": "Instance name is required.",
       "invalid_temp_pct": "Temperature must be between 0 and 100.",
-      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex)."
+      "invalid_color": "Enter a valid colour (picker value or #RRGGBB hex)."
     },
     "abort": {
       "already_configured": "This controller is already configured."
@@ -161,29 +161,29 @@
         "description": "Configure mode-specific fields for Step {step} of {on_steps}. White & temperature shows only temperature. Colour shows only colour fields.",
         "data": {
           "step_1_temp_pct": "Step 1 white temperature (%)",
-          "step_1_color_rgb": "Step 1 color",
-          "step_1_color_hex": "Step 1 color (hex)",
+          "step_1_color_rgb": "Step 1 colour",
+          "step_1_color_hex": "Step 1 colour (hex)",
           "step_2_temp_pct": "Step 2 white temperature (%)",
-          "step_2_color_rgb": "Step 2 color",
-          "step_2_color_hex": "Step 2 color (hex)",
+          "step_2_color_rgb": "Step 2 colour",
+          "step_2_color_hex": "Step 2 colour (hex)",
           "step_3_temp_pct": "Step 3 white temperature (%)",
-          "step_3_color_rgb": "Step 3 color",
-          "step_3_color_hex": "Step 3 color (hex)",
+          "step_3_color_rgb": "Step 3 colour",
+          "step_3_color_hex": "Step 3 colour (hex)",
           "step_4_temp_pct": "Step 4 white temperature (%)",
-          "step_4_color_rgb": "Step 4 color",
-          "step_4_color_hex": "Step 4 color (hex)",
+          "step_4_color_rgb": "Step 4 colour",
+          "step_4_color_hex": "Step 4 colour (hex)",
           "step_5_temp_pct": "Step 5 white temperature (%)",
-          "step_5_color_rgb": "Step 5 color",
-          "step_5_color_hex": "Step 5 color (hex)",
+          "step_5_color_rgb": "Step 5 colour",
+          "step_5_color_hex": "Step 5 colour (hex)",
           "step_6_temp_pct": "Step 6 white temperature (%)",
-          "step_6_color_rgb": "Step 6 color",
-          "step_6_color_hex": "Step 6 color (hex)",
+          "step_6_color_rgb": "Step 6 colour",
+          "step_6_color_hex": "Step 6 colour (hex)",
           "step_7_temp_pct": "Step 7 white temperature (%)",
-          "step_7_color_rgb": "Step 7 color",
-          "step_7_color_hex": "Step 7 color (hex)",
+          "step_7_color_rgb": "Step 7 colour",
+          "step_7_color_hex": "Step 7 colour (hex)",
           "step_8_temp_pct": "Step 8 white temperature (%)",
-          "step_8_color_rgb": "Step 8 color",
-          "step_8_color_hex": "Step 8 color (hex)"
+          "step_8_color_rgb": "Step 8 colour",
+          "step_8_color_hex": "Step 8 colour (hex)"
         }
       }
     },
@@ -197,7 +197,7 @@
       "target_required": "Select at least one target light.",
       "label_required": "Label is required.",
       "invalid_temp_pct": "Temperature must be between 0 and 100.",
-      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex)."
+      "invalid_color": "Enter a valid colour (picker value or #RRGGBB hex)."
     }
   }
 }

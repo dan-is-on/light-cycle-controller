@@ -95,6 +95,7 @@ def _coerce_target_entity_ids(data: dict[str, Any]) -> list[str]:
 
 
 def _coerce_rgb_channel(value: Any) -> int | None:
+    """Parse a single RGB channel and return a bounded 0..255 value."""
     try:
         channel = int(value)
     except (TypeError, ValueError):
@@ -105,6 +106,7 @@ def _coerce_rgb_channel(value: Any) -> int | None:
 
 
 def _normalize_hex_color(value: Any) -> str | None:
+    """Normalize supported hex input to uppercase `#RRGGBB` format."""
     if not isinstance(value, str):
         return None
     raw = value.strip()
@@ -120,10 +122,19 @@ def _normalize_hex_color(value: Any) -> str | None:
 
 
 def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    """Convert an RGB tuple to a `#RRGGBB` string."""
     return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
 
 
 def _parse_rgb_color(value: Any) -> tuple[int, int, int] | None:
+    """Parse RGB values from multiple UI/storage formats.
+
+    Supported inputs:
+    - `[r, g, b]` / `(r, g, b)`
+    - `{"r": 1, "g": 2, "b": 3}`
+    - `{"red": 1, "green": 2, "blue": 3}`
+    - `#RRGGBB`
+    """
     if isinstance(value, (list, tuple)) and len(value) == 3:
         channels = [_coerce_rgb_channel(channel) for channel in value]
         if all(channel is not None for channel in channels):
@@ -157,12 +168,14 @@ def _parse_rgb_color(value: Any) -> tuple[int, int, int] | None:
 
 
 def _normalize_step_mode(value: Any) -> str:
+    """Return a supported step mode with a safe default."""
     if str(value or "").strip().lower() == STEP_MODE_COLOR:
         return STEP_MODE_COLOR
     return STEP_MODE_WHITE_TEMP
 
 
 def _normalize_step(step: Any) -> dict[str, Any]:
+    """Normalize one step dictionary to the full schema expected at runtime."""
     if not isinstance(step, dict):
         return {
             CONF_STEP_LABEL: "Step",
@@ -203,6 +216,7 @@ def _normalize_step(step: Any) -> dict[str, Any]:
 
 
 def _normalize_steps(steps: Any) -> list[dict[str, Any]]:
+    """Normalize a sequence of step definitions."""
     if not isinstance(steps, list):
         return []
     return [_normalize_step(step) for step in steps]
@@ -210,11 +224,14 @@ def _normalize_steps(steps: Any) -> list[dict[str, Any]]:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Light Cycle Controller from a config entry."""
+    # Keep all runtime integration state under `hass.data[DOMAIN]`.
     domain_data = hass.data.setdefault(DOMAIN, {})
     controllers: dict[str, LightCycleController] = domain_data.setdefault(DATA_CONTROLLERS, {})
+    # Load persisted global settings early so controllers can read cached values immediately.
     await async_get_settings(hass)
 
     if not domain_data.get(DATA_SERVICES_REGISTERED):
+        # Register services only once per integration domain, not once per entry.
         async def _handle_dump(call) -> None:
             await _async_handle_dump_service(hass, call)
 
@@ -228,6 +245,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # Create and start one runtime controller per config entry.
     controller = LightCycleController(hass, entry)
     await controller.async_start()
     controllers[entry.entry_id] = controller
@@ -245,9 +263,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     LOGGER.info("Migrating entry %s from version %s to 2", entry.entry_id, entry.version)
 
+    # Copy both sections because older entries may store values in either data or options.
     new_data = dict(entry.data)
     new_options = dict(entry.options)
 
+    # Ensure every migrated step has explicit mode/temp/color fields so runtime logic is stable.
     if CONF_STEPS in new_data:
         new_data[CONF_STEPS] = _normalize_steps(new_data.get(CONF_STEPS))
     if CONF_STEPS in new_options:
@@ -265,15 +285,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
     """Dump controller/entry state to logs (for debugging)."""
+    # Resolve currently loaded controller objects from integration state.
     domain_data = hass.data.get(DOMAIN, {})
     controllers: dict[str, LightCycleController] = domain_data.get(DATA_CONTROLLERS, {})
 
+    # Optional `entry_id` allows users to focus on one controller.
     requested_entry_id = call.data.get("entry_id")
     entry_ids = [requested_entry_id] if requested_entry_id else list(controllers.keys())
 
     if not entry_ids:
-        # Use WARNING so it shows up in Settings → System → Logs (which hides INFO).
-        LOGGER.warning("Dump: no loaded controllers")
+        LOGGER.info("Dump: no loaded controllers")
         return
 
     for entry_id in entry_ids:
@@ -281,12 +302,14 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         entry = hass.config_entries.async_get_entry(entry_id)
 
         if controller is None:
-            LOGGER.warning("Dump: entry=%s not loaded", entry_id)
+            LOGGER.info("Dump: entry=%s not loaded", entry_id)
             continue
 
         merged = controller._merged_entry_data()
         steps = merged.get(CONF_STEPS, [])
         steps_list = steps if isinstance(steps, list) else []
+
+        # Capture the currently configured target and a quick snapshot of its live state.
         target_entity_ids = _coerce_target_entity_ids(merged)
         primary_target = target_entity_ids[0] if target_entity_ids else None
         target_state = hass.states.get(primary_target) if primary_target else None
@@ -316,6 +339,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
         expanded_targets = controller._expanded_target_entity_ids()
         member_summary: dict[str, Any] | None = None
         if expanded_targets:
+            # Summarize each expanded member so collection-level behavior is easier to debug.
             votes: Counter[int] = Counter()
             counts: Counter[str] = Counter()
             sample: list[dict[str, Any]] = []
@@ -345,6 +369,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
                     counts["on_no_brightness"] += 1
                     continue
 
+                # Show how many members map nearest to each configured step.
                 votes[controller._nearest_step_for_pct(pct)] += 1
 
             member_summary = {
@@ -355,7 +380,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
                 "average_pct": round(getattr(controller, "_last_average_pct", 0.0), 2),
             }
 
-        LOGGER.warning(
+        LOGGER.info(
             "Dump: entry=%s title=%s targets=%s primary_state=%s primary_brightness=%s controller_steps=%s entry_steps=%s resolved=%s classified=%s next(resolved)=%s next(classified)=%s expanded_targets=%s average_pct=%.2f max_parallel_calls=%s",
             controller.entry.entry_id,
             (entry.title if entry is not None else controller.entry.title),
@@ -373,12 +398,12 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
             controller._max_parallel_calls(),
         )
         if member_summary is not None:
-            LOGGER.warning(
+            LOGGER.info(
                 "Dump: entry=%s members=%s",
                 controller.entry.entry_id,
                 member_summary,
             )
-        LOGGER.warning(
+        LOGGER.info(
             "Dump: entry=%s ieee=%s endpoint=%s command=%s cluster_id=%s args=%s",
             controller.entry.entry_id,
             merged.get(CONF_REMOTE_IEEE),
@@ -387,7 +412,7 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
             merged.get(CONF_CLUSTER_ID),
             merged.get(CONF_ARGS),
         )
-        LOGGER.warning(
+        LOGGER.info(
             "Dump: entry=%s steps=%s",
             controller.entry.entry_id,
             [
@@ -422,9 +447,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     controllers: dict[str, LightCycleController] = domain_data.get(DATA_CONTROLLERS, {})
     controller: LightCycleController | None = controllers.pop(entry.entry_id, None)
     if controller is not None:
+        # Stop event listeners so this entry no longer reacts after removal/reload.
         await controller.async_stop()
 
     if not controllers:
+        # If no entries remain, remove domain services and clear integration runtime state.
         if domain_data.get(DATA_SERVICES_REGISTERED):
             hass.services.async_remove(DOMAIN, SERVICE_DUMP)
         hass.data.pop(DOMAIN, None)
@@ -435,11 +462,14 @@ class LightCycleController:
     """Runtime controller for a single config entry."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        # Persist Home Assistant and config entry references for lifecycle operations.
         self.hass = hass
         self.entry = entry
 
+        # Merge entry data/options so the controller always starts from latest saved values.
         data: dict[str, Any] = {**entry.data, **entry.options}
 
+        # Core matching configuration for the remote button and target collection.
         self._target_entity_ids: list[str] = _coerce_target_entity_ids(data)
         self._remote_ieee: str = data[CONF_REMOTE_IEEE]
         self._endpoint_id: int = int(data[CONF_ENDPOINT_ID])
@@ -447,6 +477,7 @@ class LightCycleController:
         self._cluster_id: int | None = data.get(CONF_CLUSTER_ID)
         self._args: list[Any] | None = data.get(CONF_ARGS)
 
+        # Normalized step configuration and runtime caches derived from target entities.
         self._steps: list[dict[str, Any]] = _normalize_steps(data[CONF_STEPS])
         self._expanded_targets_cache: list[str] = []
         self._targets_cache_dirty: bool = True
@@ -454,9 +485,11 @@ class LightCycleController:
         self._is_tuya_cache: dict[str, bool] = {}
         self._temp_range_cache: dict[str, tuple[int, int]] = {}
 
+        # Event unsubscription callbacks are stored so unload/reload can cleanly detach.
         self._unsub_zha: Callable[[], None] | None = None
         self._unsub_state: Callable[[], None] | None = None
 
+        # Runtime coordination and classification state.
         self._press_lock = asyncio.Lock()
         self._resolved_index: int = 0
         self._ignore_state_changes_until: float = 0.0
@@ -465,14 +498,17 @@ class LightCycleController:
 
     async def async_start(self) -> None:
         """Start listening for button presses and light state changes."""
+        # Guard against accidental double-starts during reload races.
         if self._unsub_zha is not None or self._unsub_state is not None:
             return
 
+        # Ensure local caches are in sync before subscriptions begin.
         self._refresh_targets_from_entry()
         self._refresh_steps_from_entry()
         self._refresh_expanded_targets(force=True)
         self._resubscribe_state_listener()
 
+        # Subscribe to ZHA button events and initialize current cycle position.
         self._unsub_zha = self.hass.bus.async_listen(EVENT_ZHA_EVENT, self._on_zha_event)
         self._resolved_index = self._classify_state()
 
@@ -494,7 +530,7 @@ class LightCycleController:
         )
 
     async def async_stop(self) -> None:
-        """Stop listening."""
+        """Stop event subscriptions for this controller."""
         if self._unsub_zha is not None:
             self._unsub_zha()
             self._unsub_zha = None
@@ -504,6 +540,8 @@ class LightCycleController:
 
     @callback
     def _on_state_change(self, event: Event) -> None:
+        """Handle state changes for watched entities and keep resolved index current."""
+        # Ignore transient state churn while a button-triggered apply is still settling.
         if time.monotonic() < self._ignore_state_changes_until:
             return
 
@@ -511,20 +549,25 @@ class LightCycleController:
         new_state: State | None = event.data.get("new_state")
 
         if self._group_membership_changed(old_state, new_state):
+            # Re-expand targets on next use when group membership changes.
             self._targets_cache_dirty = True
 
+        # Re-read latest config entry values so configure changes apply immediately.
         self._refresh_targets_from_entry()
         self._refresh_steps_from_entry()
         self._resolved_index = self._classify_state(new_state)
 
     @callback
     def _on_zha_event(self, event: Event) -> None:
+        """Schedule press handling for matching ZHA events."""
         if not self._matches_zha_event(event.data):
             return
 
+        # Run press handling asynchronously so event bus processing stays non-blocking.
         self.hass.async_create_task(self._async_handle_press())
 
     def _matches_zha_event(self, data: dict[str, Any]) -> bool:
+        """Return whether an incoming zha_event matches this controller signature."""
         device_ieee = data.get("device_ieee")
         if device_ieee != self._remote_ieee:
             return False
@@ -538,11 +581,13 @@ class LightCycleController:
             return False
 
         if self._cluster_id is not None:
+            # Optional cluster filtering helps disambiguate remotes with reused commands.
             cluster_id = data.get(CONF_CLUSTER_ID)
             if cluster_id is None or int(cluster_id) != int(self._cluster_id):
                 return False
 
         if self._args is not None:
+            # Optional args filtering helps disambiguate field-specific button payloads.
             args = data.get(CONF_ARGS, [])
             if list(args) != list(self._args):
                 return False
@@ -555,12 +600,17 @@ class LightCycleController:
         return self._classify_expanded_members(expanded)
 
     def _classify_expanded_members(self, entity_ids: list[str]) -> int:
+        """Classify the current step index from a list of expanded target entities."""
         average_pct, counts = self._average_collection_brightness_pct(entity_ids)
         self._last_average_pct = average_pct
         self._last_sample_counts = counts
         return self._classify_average_pct(average_pct)
 
     def _average_collection_brightness_pct(self, entity_ids: list[str]) -> tuple[float, dict[str, int]]:
+        """Return average brightness percent and sample counters for a collection.
+
+        Classification intentionally uses brightness only, regardless of color/temperature mode.
+        """
         if not entity_ids:
             return 0.0, {"empty_collection": 1}
 
@@ -585,6 +635,7 @@ class LightCycleController:
         return average_pct, dict(counts)
 
     def _sample_pct_for_state(self, state: State | None) -> int:
+        """Convert one state object into a brightness percentage sample."""
         if state is None:
             return 0
 
@@ -603,6 +654,7 @@ class LightCycleController:
         return self._step_pct(fallback_index)
 
     def _classify_average_pct(self, average_pct: float) -> int:
+        """Map a collection-average brightness percentage to a cycle step index."""
         if average_pct <= 0:
             return 0
 
@@ -622,6 +674,7 @@ class LightCycleController:
         return round((brightness_int / 255) * 100)
 
     def _nearest_step_for_pct(self, brightness_pct: int) -> int:
+        """Return the configured step index with nearest brightness percentage."""
         best_step: int = 1
         best_delta: int = 999
 
@@ -639,6 +692,7 @@ class LightCycleController:
         return best_step
 
     def _step_pct(self, index: int) -> int:
+        """Return configured brightness percent for a step index."""
         if index <= 0:
             return 0
         try:
@@ -647,9 +701,11 @@ class LightCycleController:
             return 100
 
     def _step_mode(self, step: dict[str, Any]) -> str:
+        """Return normalized step mode for a step object."""
         return _normalize_step_mode(step.get(CONF_STEP_MODE))
 
     def _step_temp_pct(self, step: dict[str, Any]) -> int:
+        """Return bounded temperature percentage for white/temperature mode."""
         try:
             temp_pct = int(step.get(CONF_STEP_TEMP_PCT, DEFAULT_STEP_TEMP_PCT))
         except (TypeError, ValueError):
@@ -657,6 +713,7 @@ class LightCycleController:
         return max(0, min(100, temp_pct))
 
     def _step_rgb(self, step: dict[str, Any]) -> tuple[int, int, int]:
+        """Return RGB tuple for a color-mode step, with safe defaults."""
         rgb = _parse_rgb_color(step.get(CONF_STEP_COLOR_RGB))
         if rgb is not None:
             return rgb
@@ -670,6 +727,7 @@ class LightCycleController:
         return tuple(DEFAULT_STEP_COLOR_RGB)
 
     def _supported_color_modes(self, entity_id: str) -> set[str]:
+        """Read supported color modes for an entity from its current state."""
         state = self.hass.states.get(entity_id)
         if state is None:
             return set()
@@ -684,6 +742,7 @@ class LightCycleController:
         return set()
 
     def _supports_color_temp(self, entity_id: str) -> bool:
+        """Determine whether an entity can accept color temperature payloads."""
         modes = self._supported_color_modes(entity_id)
         if "color_temp" in modes:
             return True
@@ -705,10 +764,12 @@ class LightCycleController:
         )
 
     def _refresh_temp_range_cache(self, entity_ids: list[str]) -> None:
+        """Warm the per-entity temperature range cache for a list of entities."""
         for entity_id in entity_ids:
             self._get_temp_range(entity_id)
 
     def _extract_temp_range(self, entity_id: str) -> tuple[int, int]:
+        """Extract min/max Kelvin range from entity attributes with fallbacks."""
         state = self.hass.states.get(entity_id)
         attrs = state.attributes if state is not None else {}
 
@@ -744,6 +805,7 @@ class LightCycleController:
         return low, high
 
     def _get_temp_range(self, entity_id: str) -> tuple[int, int]:
+        """Return cached temperature range for an entity."""
         cached = self._temp_range_cache.get(entity_id)
         if cached is not None:
             return cached
@@ -753,6 +815,7 @@ class LightCycleController:
         return computed
 
     def _target_kelvin_for_entity(self, entity_id: str, temp_pct: int) -> int:
+        """Convert UI temp percentage into an entity-specific Kelvin target."""
         min_kelvin, max_kelvin = self._get_temp_range(entity_id)
         temp_ratio = max(0, min(100, temp_pct)) / 100
         return round(min_kelvin + ((max_kelvin - min_kelvin) * temp_ratio))
@@ -760,6 +823,11 @@ class LightCycleController:
     def _color_payload_for_entity(
         self, entity_id: str, rgb: tuple[int, int, int]
     ) -> dict[str, Any]:
+        """Build the best color payload for one entity.
+
+        Tuya integrations generally map color more reliably through HS payloads, so HS is
+        preferred there when supported.
+        """
         supported_modes = self._supported_color_modes(entity_id)
         is_tuya = self._is_tuya_entity(entity_id)
 
@@ -789,6 +857,7 @@ class LightCycleController:
     def _turn_on_payload_for_entity(
         self, entity_id: str, step: dict[str, Any]
     ) -> dict[str, Any]:
+        """Build a full turn_on payload for one entity for the selected step."""
         brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
         brightness = round((brightness_pct / 100) * 255)
         payload: dict[str, Any] = {
@@ -798,12 +867,15 @@ class LightCycleController:
 
         mode = self._step_mode(step)
         if mode == STEP_MODE_COLOR:
+            # Color mode keeps brightness and color in one service call.
             payload.update(self._color_payload_for_entity(entity_id, self._step_rgb(step)))
             return payload
 
         if not self._supports_color_temp(entity_id):
+            # If temperature control is unsupported, apply brightness-only.
             return payload
 
+        # White/temp mode maps 0..100 UI slider to this entity's Kelvin range.
         temp_pct = self._step_temp_pct(step)
         kelvin = self._target_kelvin_for_entity(entity_id, temp_pct)
         state = self.hass.states.get(entity_id)
@@ -850,6 +922,7 @@ class LightCycleController:
                 self._resolved_index = len(self._steps)
 
     def _refresh_targets_from_entry(self) -> None:
+        """Refresh target entity collection from latest config entry values."""
         data = self._merged_entry_data()
         targets = _coerce_target_entity_ids(data)
         if not targets:
@@ -865,6 +938,7 @@ class LightCycleController:
             self._targets_cache_dirty = True
 
     def _group_membership_changed(self, old_state: State | None, new_state: State | None) -> bool:
+        """Return True when a watched light group's member list changed."""
         if old_state is None and new_state is None:
             return False
         old_members = None if old_state is None else old_state.attributes.get(ATTR_ENTITY_ID)
@@ -874,6 +948,7 @@ class LightCycleController:
         return False
 
     def _state_subscription_entities(self) -> list[str]:
+        """Return de-duplicated entity list to watch for state changes."""
         combined = self._target_entity_ids + self._expanded_targets_cache
         unique: list[str] = []
         seen: set[str] = set()
@@ -885,6 +960,7 @@ class LightCycleController:
         return unique
 
     def _resubscribe_state_listener(self) -> None:
+        """Ensure state listener tracks the current target and expanded entities."""
         watch_entities = self._state_subscription_entities()
         if not watch_entities:
             return
@@ -903,7 +979,9 @@ class LightCycleController:
         self._watched_state_entity_ids = watch_entities
 
     async def _async_handle_press(self) -> None:
+        """Process one matching button press end-to-end."""
         async with self._press_lock:
+            # Refresh mutable config first so runtime reflects latest options flow changes.
             self._refresh_targets_from_entry()
             self._refresh_steps_from_entry()
 
@@ -911,6 +989,7 @@ class LightCycleController:
             current_index = self._classify_expanded_members(expanded_before)
             self._resolved_index = current_index
 
+            # Suppress state-event based reclassification while updates are propagating.
             target_count = len(expanded_before)
             settle_seconds = max(1.5, min(8.0, target_count * 0.08))
             self._ignore_state_changes_until = time.monotonic() + settle_seconds
@@ -940,7 +1019,9 @@ class LightCycleController:
                 )
                 return
             else:
+                # Persist resolved index immediately for deterministic next-step behavior.
                 self._resolved_index = next_index
+                # Reconcile if group expansion changed during apply.
                 await self._async_reconcile_expanded_targets(next_index, expanded_before)
                 self._ignore_state_changes_until = max(
                     self._ignore_state_changes_until,
@@ -948,6 +1029,7 @@ class LightCycleController:
                 )
 
     async def _async_apply_index(self, index: int, expanded_before: list[str]) -> None:
+        """Apply one cycle index (Off or one configured On step)."""
         if index == 0:
             LOGGER.debug("Turning off %s", self._target_entity_ids)
             await self._async_call_light_service(
@@ -955,6 +1037,7 @@ class LightCycleController:
             )
             return
 
+        # Step indexes are 1-based; list indexes are 0-based.
         step = self._steps[index - 1]
         label = step.get("label")
         mode = self._step_mode(step)
@@ -972,6 +1055,7 @@ class LightCycleController:
     async def _async_reconcile_expanded_targets(
         self, applied_index: int, previous_targets: list[str]
     ) -> None:
+        """Re-apply the just-applied step to targets added after expansion changed."""
         refreshed_targets, changed = self._refresh_expanded_targets(force=True)
         if changed:
             self._resubscribe_state_listener()
@@ -991,6 +1075,7 @@ class LightCycleController:
             await self._async_call_light_service_best_effort("turn_off", added_targets, {})
             return
 
+        # Reuse the exact applied step so newly discovered members stay in sync.
         step = self._steps[applied_index - 1]
         await self._async_apply_step_to_entities(step, added_targets)
 
@@ -1031,11 +1116,13 @@ class LightCycleController:
     async def _async_apply_step_to_entities(
         self, step: dict[str, Any], entity_ids: list[str]
     ) -> None:
+        """Apply one On step to a list of entities with per-entity payloads."""
         if not entity_ids:
             return
 
         payload_by_entity: dict[str, dict[str, Any]] = {}
         for entity_id in entity_ids:
+            # Build payloads per entity to account for differing color capabilities.
             payload_by_entity[entity_id] = self._turn_on_payload_for_entity(entity_id, step)
 
         failures = await self._async_call_light_service_many_with_payload(
@@ -1064,6 +1151,7 @@ class LightCycleController:
         return expanded_targets
 
     def _cached_expanded_target_entity_ids(self) -> list[str]:
+        """Return expanded targets, building cache immediately when empty."""
         if self._expanded_targets_cache:
             return list(self._expanded_targets_cache)
 
@@ -1072,6 +1160,7 @@ class LightCycleController:
         return expanded_targets
 
     def _refresh_expanded_targets(self, force: bool) -> tuple[list[str], bool]:
+        """Rebuild expanded target cache when needed and report whether it changed."""
         if not force and self._expanded_targets_cache and not self._targets_cache_dirty:
             return list(self._expanded_targets_cache), False
 
@@ -1083,6 +1172,7 @@ class LightCycleController:
         return list(self._expanded_targets_cache), changed
 
     def _expanded_entity_ids(self, root_entity_ids: list[str]) -> list[str]:
+        """Expand nested light groups into leaf light entities."""
         visited: set[str] = set()
         leaves: list[str] = []
         stack: list[str] = list(root_entity_ids)
@@ -1123,6 +1213,7 @@ class LightCycleController:
         entity_ids: list[str],
         service_data: dict[str, Any],
     ) -> None:
+        """Call a light service across many entities, tolerating partial failures."""
         failures = await self._async_call_light_service_many(
             service, entity_ids, service_data
         )
@@ -1141,6 +1232,7 @@ class LightCycleController:
     async def _async_call_light_service_single(
         self, service: str, entity_id: str, service_data: dict[str, Any]
     ) -> Exception | None:
+        """Call one light service and return exception instead of raising."""
         try:
             await self.hass.services.async_call(
                 LIGHT_DOMAIN,
@@ -1155,6 +1247,7 @@ class LightCycleController:
     async def _async_call_light_service_many_with_payload(
         self, service: str, payload_by_entity: dict[str, dict[str, Any]]
     ) -> list[tuple[str, Exception]]:
+        """Call one light service across entities where each has unique payload data."""
         if not payload_by_entity:
             return []
 
@@ -1175,6 +1268,7 @@ class LightCycleController:
         semaphore = asyncio.Semaphore(max_parallel_calls)
 
         async def _call(entity_id: str) -> tuple[str, Exception | None]:
+            # Semaphore bounds concurrent service calls for bridge/cloud stability.
             async with semaphore:
                 exc = await self._async_call_light_service_single(
                     service, entity_id, payload_by_entity[entity_id]
@@ -1187,6 +1281,7 @@ class LightCycleController:
     async def _async_call_light_service_many(
         self, service: str, entity_ids: list[str], service_data: dict[str, Any]
     ) -> list[tuple[str, Exception]]:
+        """Call one light service across many entities with shared payload data."""
         if not entity_ids:
             return []
 
@@ -1205,6 +1300,7 @@ class LightCycleController:
         semaphore = asyncio.Semaphore(max_parallel_calls)
 
         async def _call(entity_id: str) -> tuple[str, Exception | None]:
+            # Semaphore bounds concurrent service calls for bridge/cloud stability.
             async with semaphore:
                 exc = await self._async_call_light_service_single(
                     service, entity_id, service_data
@@ -1215,6 +1311,7 @@ class LightCycleController:
         return [(entity_id, exc) for entity_id, exc in results if exc is not None]
 
     def _max_parallel_calls(self) -> int:
+        """Return current integration-wide parallelism limit."""
         return get_max_parallel_calls(self.hass)
 
     def _ordered_entity_ids_for_dispatch(self, entity_ids: list[str]) -> list[str]:
@@ -1242,6 +1339,7 @@ class LightCycleController:
         return normal_entities + tuya_entities
 
     def _is_tuya_entity(self, entity_id: str) -> bool:
+        """Return whether an entity is likely backed by Tuya integration/device."""
         cached = self._is_tuya_cache.get(entity_id)
         if cached is not None:
             return cached

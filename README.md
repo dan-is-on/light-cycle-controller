@@ -32,13 +32,13 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 3. **Capture button press**
    - Click **Submit**, then press the desired physical button once
    - Integration stores a “signature” (device IEEE + endpoint + command; optionally cluster/args if needed)
-4. **Configure brightness steps**
+4. **Configure step basics**
    - Choose number of “On” steps (1–8)
-   - For each step:
-     - label + brightness % (1–100)
-     - mode: **White & temperature** or **Color**
-     - White mode: temperature slider (0–100% of each light’s min/max Kelvin range)
-     - Color mode: color picker + `#RRGGBB` hex
+   - For each step: label + brightness % + mode (**White & temperature** or **Colour**)
+5. **Configure step details**
+   - Mode-specific details are then shown **one step at a time** (clear visual separation):
+     - White & temperature: only temperature slider (0–100% of each light’s min/max Kelvin range)
+     - Colour: only colour picker + `#RRGGBB` hex
    - Off is always included as the first state
 
 ## How cycling + sync works
@@ -79,6 +79,11 @@ This repository is intended to be HACS-compatible.
 2. Add this repo URL and select category **Integration**
 3. Install, then restart Home Assistant
 4. Settings → Devices & Services → **Add Integration** → “Light Cycle Controller”
+
+### Australian English UI text
+
+This integration now includes an `en-AU` translation file.  
+If your Home Assistant language is set to Australian English, UI labels use local spelling (for example, “Colour”).
 
 ### Integration icon (“icon not available”)
 
@@ -121,7 +126,7 @@ You can also dump the currently loaded configuration via an action/service:
 1. Developer Tools → **Actions**
 2. Choose **Dump controller state** (`light_cycle.dump`)
 3. Optional data: `{"entry_id": "..."}`
-4. Check Settings → System → Logs for `Dump:` lines (dump output is logged at `WARNING` so it shows up there)
+4. Check logs for `Dump:` lines (`light_cycle.dump` output is logged at `INFO` level)
 
 Or download diagnostics for a specific entry:
 
@@ -132,12 +137,32 @@ Or download diagnostics for a specific entry:
 
 Enable debug logging to see per-press logs:
 
-1. Settings → System → Logs → ⋮ → **Configure logging**
-2. Add: `custom_components.light_cycle: debug`
+1. Developer Tools → **Actions**
+2. Run this action to enable full debug logs at runtime:
+   ```yaml
+   action: logger.set_level
+   data:
+     custom_components.light_cycle: debug
+   ```
+   Or use `info` instead of `debug` for lighter logs (still includes `Dump:` lines).
 3. Edit an entry (e.g. change 2 → 3 steps), press the button once, then check logs for lines like:
    - `Started controller ... (steps=...)`
    - `Refreshed steps ...`
    - `Press: ... steps=...`
+4. In Logs, use **⋮ → Show raw logs** to see INFO/DEBUG output (the condensed view is warnings/errors only).
+
+#### Persistent logger config (`configuration.yaml`)
+
+If you want logging levels to survive restarts, add:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.light_cycle: debug
+```
+
+Use `info` instead of `debug` when you only want operational logs and dump output with less noise.
 
 ## License
 

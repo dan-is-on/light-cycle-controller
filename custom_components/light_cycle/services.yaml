@@ -2,7 +2,8 @@ dump:
   name: Dump controller state
   description: |
     Dump the currently loaded controller configuration and runtime state for debugging.
-    The output is logged as `Dump:` lines in Home Assistant system logs.
+    The output is logged as `Dump:` lines at INFO level by `custom_components.light_cycle`.
+    Enable INFO/DEBUG for this logger to view the dump output in Home Assistant logs.
   fields:
     entry_id:
       name: Entry ID

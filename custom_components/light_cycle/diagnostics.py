@@ -20,6 +20,7 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
+    # Resolve target entity IDs from modern multi-select field with legacy fallback.
     raw_targets = entry.options.get(
         CONF_TARGET_ENTITY_IDS, entry.data.get(CONF_TARGET_ENTITY_IDS)
     )
@@ -38,9 +39,11 @@ async def async_get_config_entry_diagnostics(
         if isinstance(legacy_target, str):
             target_entity_ids = [legacy_target]
 
+    # Snapshot primary target state for quick top-level diagnostics context.
     target_entity_id = target_entity_ids[0] if target_entity_ids else None
     target_state = hass.states.get(target_entity_id) if target_entity_id else None
 
+    # Pull live controller runtime object if currently loaded.
     controllers: dict[str, Any] = hass.data.get(DOMAIN, {}).get("controllers", {})
     controller = controllers.get(entry.entry_id)
 
@@ -49,6 +52,7 @@ async def async_get_config_entry_diagnostics(
     expanded_targets: list[str] | None = None
     member_summary: dict[str, Any] | None = None
     if controller is not None:
+        # Classify current position and compute expected next index when possible.
         try:
             classified_index = controller._classify_state()
         except Exception:
@@ -65,6 +69,7 @@ async def async_get_config_entry_diagnostics(
             expanded_targets = None
 
         if expanded_targets:
+            # Build collection-level counters to explain step classification behavior.
             votes: Counter[int] = Counter()
             counts: Counter[str] = Counter()
 
@@ -91,6 +96,7 @@ async def async_get_config_entry_diagnostics(
                 "step_votes": dict(votes),
             }
 
+    # Include entry payloads (redacted) and primary target state in every diagnostics file.
     data: dict[str, Any] = {
         "entry": {
             "entry_id": entry.entry_id,
@@ -114,6 +120,7 @@ async def async_get_config_entry_diagnostics(
     }
 
     if controller is not None:
+        # Serialize tuple cache values into JSON-friendly list values.
         temp_range_cache = {
             entity_id: [bounds[0], bounds[1]]
             for entity_id, bounds in getattr(controller, "_temp_range_cache", {}).items()

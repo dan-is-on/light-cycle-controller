@@ -674,9 +674,15 @@ class LightCycleController:
         return round((brightness_int / 255) * 100)
 
     def _nearest_step_for_pct(self, brightness_pct: int) -> int:
-        """Return the configured step index with nearest brightness percentage."""
-        best_step: int = 1
+        """Return the configured step index with nearest brightness percentage.
+
+        When multiple steps are equally close (for example, duplicate brightness levels),
+        prefer the current resolved step if it is one of the tied candidates. This keeps
+        cycle progression moving forward instead of repeatedly re-classifying to the same
+        earliest duplicate-brightness step.
+        """
         best_delta: int = 999
+        candidate_steps: list[int] = []
 
         for step_num, step in enumerate(self._steps, start=1):
             try:
@@ -687,9 +693,38 @@ class LightCycleController:
             delta = abs(step_pct - brightness_pct)
             if delta < best_delta:
                 best_delta = delta
-                best_step = step_num
+                candidate_steps = [step_num]
+                continue
 
-        return best_step
+            if delta == best_delta:
+                candidate_steps.append(step_num)
+
+        if not candidate_steps:
+            return 1
+
+        if len(candidate_steps) == 1:
+            return candidate_steps[0]
+
+        if self._resolved_index in candidate_steps:
+            LOGGER.debug(
+                "Ambiguous brightness classification for entry %s at %s%%; tied_steps=%s using_resolved=%s",
+                self.entry.entry_id,
+                brightness_pct,
+                candidate_steps,
+                self._resolved_index,
+            )
+            return self._resolved_index
+
+        chosen_step = min(candidate_steps)
+        LOGGER.debug(
+            "Ambiguous brightness classification for entry %s at %s%%; tied_steps=%s using_lowest=%s",
+            self.entry.entry_id,
+            brightness_pct,
+            candidate_steps,
+            chosen_step,
+        )
+        return chosen_step
+
 
     def _step_pct(self, index: int) -> int:
         """Return configured brightness percent for a step index."""

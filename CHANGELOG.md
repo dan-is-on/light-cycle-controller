@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.17
+
+- Fix duplicate-brightness step progression by using the last resolved step as a tie-breaker during brightness classification; this prevents getting stuck on the same colour step when multiple steps share the same brightness.
+- Keep deterministic fallback to the lowest index when no resolved tied step exists (for example, cold-start classification).
+
 ## 0.1.16
 
 - Fix `light.turn_on` payload validation by sending only one brightness key (`brightness`) per call, resolving button presses that previously failed with `MultipleInvalid` and appeared to do nothing.

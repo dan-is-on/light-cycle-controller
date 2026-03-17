@@ -34,7 +34,11 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
    - Integration stores a “signature” (device IEEE + endpoint + command; optionally cluster/args if needed)
 4. **Configure brightness steps**
    - Choose number of “On” steps (1–8)
-   - For each step: label + brightness % (1–100)
+   - For each step:
+     - label + brightness % (1–100)
+     - mode: **White & temperature** or **Color**
+     - White mode: temperature slider (0–100% of each light’s min/max Kelvin range)
+     - Color mode: color picker + `#RRGGBB` hex
    - Off is always included as the first state
 
 ## How cycling + sync works
@@ -47,7 +51,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 - **Sync rules (deterministic):**
   - Light turns Off → cycle state becomes Off
   - Light becomes `unavailable` → treated as Off for cycling
-  - Compute average brightness across the expanded collection (including nested groups)
+  - Compute average **brightness only** across the expanded collection (including nested groups)
     - `off` / `unavailable` / `unknown` contribute `0%`
     - `on` with brightness contributes its converted `%`
     - `on` without brightness falls back to the last resolved step

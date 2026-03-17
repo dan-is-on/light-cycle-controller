@@ -18,11 +18,11 @@
           "device_id": "ZHA device"
         }
       },
-            "capture": {
-                "title": "Capture button press",
-                "description": "Click Submit, then press the desired physical button on {device}.",
-                "data": {}
-            },
+      "capture": {
+        "title": "Capture button press",
+        "description": "Click Submit, then press the desired physical button on {device}.",
+        "data": {}
+      },
       "steps_count": {
         "title": "Brightness steps",
         "description": "Off is always included as the first step. Choose how many \"On\" steps you want.",
@@ -32,37 +32,71 @@
       },
       "steps": {
         "title": "Configure steps",
-        "description": "Define a label and brightness percentage for each On step.",
+        "description": "Define a label, brightness, and mode for each On step. Use White & temperature with a 0-100% warmth slider, or Color with picker + hex.",
         "data": {
           "step_1_label": "Step 1 label",
           "step_1_brightness_pct": "Step 1 brightness (%)",
+          "step_1_mode": "Step 1 mode",
+          "step_1_temp_pct": "Step 1 white temperature (%)",
+          "step_1_color_rgb": "Step 1 color",
+          "step_1_color_hex": "Step 1 color (hex)",
           "step_2_label": "Step 2 label",
           "step_2_brightness_pct": "Step 2 brightness (%)",
+          "step_2_mode": "Step 2 mode",
+          "step_2_temp_pct": "Step 2 white temperature (%)",
+          "step_2_color_rgb": "Step 2 color",
+          "step_2_color_hex": "Step 2 color (hex)",
           "step_3_label": "Step 3 label",
           "step_3_brightness_pct": "Step 3 brightness (%)",
+          "step_3_mode": "Step 3 mode",
+          "step_3_temp_pct": "Step 3 white temperature (%)",
+          "step_3_color_rgb": "Step 3 color",
+          "step_3_color_hex": "Step 3 color (hex)",
           "step_4_label": "Step 4 label",
           "step_4_brightness_pct": "Step 4 brightness (%)",
+          "step_4_mode": "Step 4 mode",
+          "step_4_temp_pct": "Step 4 white temperature (%)",
+          "step_4_color_rgb": "Step 4 color",
+          "step_4_color_hex": "Step 4 color (hex)",
           "step_5_label": "Step 5 label",
           "step_5_brightness_pct": "Step 5 brightness (%)",
+          "step_5_mode": "Step 5 mode",
+          "step_5_temp_pct": "Step 5 white temperature (%)",
+          "step_5_color_rgb": "Step 5 color",
+          "step_5_color_hex": "Step 5 color (hex)",
           "step_6_label": "Step 6 label",
           "step_6_brightness_pct": "Step 6 brightness (%)",
+          "step_6_mode": "Step 6 mode",
+          "step_6_temp_pct": "Step 6 white temperature (%)",
+          "step_6_color_rgb": "Step 6 color",
+          "step_6_color_hex": "Step 6 color (hex)",
           "step_7_label": "Step 7 label",
           "step_7_brightness_pct": "Step 7 brightness (%)",
+          "step_7_mode": "Step 7 mode",
+          "step_7_temp_pct": "Step 7 white temperature (%)",
+          "step_7_color_rgb": "Step 7 color",
+          "step_7_color_hex": "Step 7 color (hex)",
           "step_8_label": "Step 8 label",
-          "step_8_brightness_pct": "Step 8 brightness (%)"
+          "step_8_brightness_pct": "Step 8 brightness (%)",
+          "step_8_mode": "Step 8 mode",
+          "step_8_temp_pct": "Step 8 white temperature (%)",
+          "step_8_color_rgb": "Step 8 color",
+          "step_8_color_hex": "Step 8 color (hex)"
         }
       }
     },
-        "error": {
-            "no_press": "No button press detected. Click Submit again, then press the button.",
-            "not_zha_device": "The selected device is not a ZHA device.",
-            "invalid_event": "The captured event did not include enough data to identify the button.",
+    "error": {
+      "no_press": "No button press detected. Click Submit again, then press the button.",
+      "not_zha_device": "The selected device is not a ZHA device.",
+      "invalid_event": "The captured event did not include enough data to identify the button.",
       "invalid_step_count": "Choose a number of steps between 1 and 8.",
       "invalid_brightness": "Brightness must be between 1 and 100.",
       "invalid_max_parallel_calls": "Choose a parallel call count between 1 and 20.",
       "target_required": "Select at least one target light.",
       "label_required": "Label is required.",
-      "name_required": "Instance name is required."
+      "name_required": "Instance name is required.",
+      "invalid_temp_pct": "Temperature must be between 0 and 100.",
+      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex)."
     },
     "abort": {
       "already_configured": "This controller is already configured."
@@ -88,24 +122,56 @@
       },
       "steps": {
         "title": "Configure steps",
-        "description": "Define a label and brightness percentage for each On step.",
+        "description": "Define a label, brightness, and mode for each On step. Use White & temperature with a 0-100% warmth slider, or Color with picker + hex.",
         "data": {
           "step_1_label": "Step 1 label",
           "step_1_brightness_pct": "Step 1 brightness (%)",
+          "step_1_mode": "Step 1 mode",
+          "step_1_temp_pct": "Step 1 white temperature (%)",
+          "step_1_color_rgb": "Step 1 color",
+          "step_1_color_hex": "Step 1 color (hex)",
           "step_2_label": "Step 2 label",
           "step_2_brightness_pct": "Step 2 brightness (%)",
+          "step_2_mode": "Step 2 mode",
+          "step_2_temp_pct": "Step 2 white temperature (%)",
+          "step_2_color_rgb": "Step 2 color",
+          "step_2_color_hex": "Step 2 color (hex)",
           "step_3_label": "Step 3 label",
           "step_3_brightness_pct": "Step 3 brightness (%)",
+          "step_3_mode": "Step 3 mode",
+          "step_3_temp_pct": "Step 3 white temperature (%)",
+          "step_3_color_rgb": "Step 3 color",
+          "step_3_color_hex": "Step 3 color (hex)",
           "step_4_label": "Step 4 label",
           "step_4_brightness_pct": "Step 4 brightness (%)",
+          "step_4_mode": "Step 4 mode",
+          "step_4_temp_pct": "Step 4 white temperature (%)",
+          "step_4_color_rgb": "Step 4 color",
+          "step_4_color_hex": "Step 4 color (hex)",
           "step_5_label": "Step 5 label",
           "step_5_brightness_pct": "Step 5 brightness (%)",
+          "step_5_mode": "Step 5 mode",
+          "step_5_temp_pct": "Step 5 white temperature (%)",
+          "step_5_color_rgb": "Step 5 color",
+          "step_5_color_hex": "Step 5 color (hex)",
           "step_6_label": "Step 6 label",
           "step_6_brightness_pct": "Step 6 brightness (%)",
+          "step_6_mode": "Step 6 mode",
+          "step_6_temp_pct": "Step 6 white temperature (%)",
+          "step_6_color_rgb": "Step 6 color",
+          "step_6_color_hex": "Step 6 color (hex)",
           "step_7_label": "Step 7 label",
           "step_7_brightness_pct": "Step 7 brightness (%)",
+          "step_7_mode": "Step 7 mode",
+          "step_7_temp_pct": "Step 7 white temperature (%)",
+          "step_7_color_rgb": "Step 7 color",
+          "step_7_color_hex": "Step 7 color (hex)",
           "step_8_label": "Step 8 label",
-          "step_8_brightness_pct": "Step 8 brightness (%)"
+          "step_8_brightness_pct": "Step 8 brightness (%)",
+          "step_8_mode": "Step 8 mode",
+          "step_8_temp_pct": "Step 8 white temperature (%)",
+          "step_8_color_rgb": "Step 8 color",
+          "step_8_color_hex": "Step 8 color (hex)"
         }
       }
     },
@@ -117,7 +183,9 @@
       "invalid_brightness": "Brightness must be between 1 and 100.",
       "invalid_max_parallel_calls": "Choose a parallel call count between 1 and 20.",
       "target_required": "Select at least one target light.",
-      "label_required": "Label is required."
+      "label_required": "Label is required.",
+      "invalid_temp_pct": "Temperature must be between 0 and 100.",
+      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex)."
     }
   }
 }

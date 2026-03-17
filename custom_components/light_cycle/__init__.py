@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import colorsys
 import logging
 import time
 from collections import Counter
@@ -30,10 +31,22 @@ from .const import (
     CONF_ENDPOINT_ID,
     CONF_REMOTE_IEEE,
     CONF_STEP_BRIGHTNESS_PCT,
+    CONF_STEP_COLOR_HEX,
+    CONF_STEP_COLOR_RGB,
+    CONF_STEP_MODE,
+    CONF_STEP_TEMP_PCT,
     CONF_STEPS,
     CONF_TARGET_ENTITY_ID,
     CONF_TARGET_ENTITY_IDS,
+    DEFAULT_STEP_COLOR_HEX,
+    DEFAULT_STEP_COLOR_RGB,
+    DEFAULT_STEP_MODE,
+    DEFAULT_STEP_TEMP_PCT,
+    DEFAULT_TEMP_MAX_KELVIN,
+    DEFAULT_TEMP_MIN_KELVIN,
     DOMAIN,
+    STEP_MODE_COLOR,
+    STEP_MODE_WHITE_TEMP,
 )
 from .settings import async_get_settings, get_max_parallel_calls
 
@@ -81,6 +94,120 @@ def _coerce_target_entity_ids(data: dict[str, Any]) -> list[str]:
     return []
 
 
+def _coerce_rgb_channel(value: Any) -> int | None:
+    try:
+        channel = int(value)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= channel <= 255):
+        return None
+    return channel
+
+
+def _normalize_hex_color(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if len(raw) != 6:
+        return None
+    try:
+        int(raw, 16)
+    except ValueError:
+        return None
+    return f"#{raw.upper()}"
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+
+
+def _parse_rgb_color(value: Any) -> tuple[int, int, int] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        channels = [_coerce_rgb_channel(channel) for channel in value]
+        if all(channel is not None for channel in channels):
+            return int(channels[0]), int(channels[1]), int(channels[2])
+        return None
+
+    if isinstance(value, dict):
+        if {"r", "g", "b"}.issubset(value):
+            channels = [
+                _coerce_rgb_channel(value.get("r")),
+                _coerce_rgb_channel(value.get("g")),
+                _coerce_rgb_channel(value.get("b")),
+            ]
+            if all(channel is not None for channel in channels):
+                return int(channels[0]), int(channels[1]), int(channels[2])
+        if {"red", "green", "blue"}.issubset(value):
+            channels = [
+                _coerce_rgb_channel(value.get("red")),
+                _coerce_rgb_channel(value.get("green")),
+                _coerce_rgb_channel(value.get("blue")),
+            ]
+            if all(channel is not None for channel in channels):
+                return int(channels[0]), int(channels[1]), int(channels[2])
+        return None
+
+    normalized_hex = _normalize_hex_color(value)
+    if normalized_hex is None:
+        return None
+    raw = normalized_hex[1:]
+    return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+
+
+def _normalize_step_mode(value: Any) -> str:
+    if str(value or "").strip().lower() == STEP_MODE_COLOR:
+        return STEP_MODE_COLOR
+    return STEP_MODE_WHITE_TEMP
+
+
+def _normalize_step(step: Any) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {
+            CONF_STEP_LABEL: "Step",
+            CONF_STEP_BRIGHTNESS_PCT: 100,
+            CONF_STEP_MODE: DEFAULT_STEP_MODE,
+            CONF_STEP_TEMP_PCT: DEFAULT_STEP_TEMP_PCT,
+            CONF_STEP_COLOR_HEX: DEFAULT_STEP_COLOR_HEX,
+            CONF_STEP_COLOR_RGB: list(DEFAULT_STEP_COLOR_RGB),
+        }
+
+    normalized: dict[str, Any] = dict(step)
+    normalized[CONF_STEP_MODE] = _normalize_step_mode(step.get(CONF_STEP_MODE))
+
+    try:
+        brightness_pct = int(step.get(CONF_STEP_BRIGHTNESS_PCT, 100))
+    except (TypeError, ValueError):
+        brightness_pct = 100
+    normalized[CONF_STEP_BRIGHTNESS_PCT] = max(1, min(100, brightness_pct))
+
+    try:
+        temp_pct = int(step.get(CONF_STEP_TEMP_PCT, DEFAULT_STEP_TEMP_PCT))
+    except (TypeError, ValueError):
+        temp_pct = DEFAULT_STEP_TEMP_PCT
+    normalized[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
+
+    rgb = _parse_rgb_color(step.get(CONF_STEP_COLOR_RGB))
+    hex_color = _normalize_hex_color(step.get(CONF_STEP_COLOR_HEX))
+    if rgb is None and hex_color is not None:
+        rgb = _parse_rgb_color(hex_color)
+    if rgb is None:
+        rgb = tuple(DEFAULT_STEP_COLOR_RGB)
+    if hex_color is None:
+        hex_color = _rgb_to_hex(rgb)
+
+    normalized[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+    normalized[CONF_STEP_COLOR_HEX] = hex_color
+    return normalized
+
+
+def _normalize_steps(steps: Any) -> list[dict[str, Any]]:
+    if not isinstance(steps, list):
+        return []
+    return [_normalize_step(step) for step in steps]
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Light Cycle Controller from a config entry."""
     domain_data = hass.data.setdefault(DOMAIN, {})
@@ -104,6 +231,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     controller = LightCycleController(hass, entry)
     await controller.async_start()
     controllers[entry.entry_id] = controller
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate config entries to newer schema versions."""
+    if entry.version > 2:
+        LOGGER.error("Unsupported config entry version %s", entry.version)
+        return False
+
+    if entry.version == 2:
+        return True
+
+    LOGGER.info("Migrating entry %s from version %s to 2", entry.entry_id, entry.version)
+
+    new_data = dict(entry.data)
+    new_options = dict(entry.options)
+
+    if CONF_STEPS in new_data:
+        new_data[CONF_STEPS] = _normalize_steps(new_data.get(CONF_STEPS))
+    if CONF_STEPS in new_options:
+        new_options[CONF_STEPS] = _normalize_steps(new_options.get(CONF_STEPS))
+
+    hass.config_entries.async_update_entry(
+        entry,
+        data=new_data,
+        options=new_options,
+        version=2,
+    )
+    LOGGER.info("Migration of entry %s to version 2 complete", entry.entry_id)
     return True
 
 
@@ -238,6 +394,10 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
                 {
                     "label": step.get("label"),
                     "brightness_pct": step.get(CONF_STEP_BRIGHTNESS_PCT),
+                    "mode": step.get(CONF_STEP_MODE),
+                    "temp_pct": step.get(CONF_STEP_TEMP_PCT),
+                    "color_hex": step.get(CONF_STEP_COLOR_HEX),
+                    "color_rgb": step.get(CONF_STEP_COLOR_RGB),
                 }
                 for step in steps_list
                 if isinstance(step, dict)
@@ -287,11 +447,12 @@ class LightCycleController:
         self._cluster_id: int | None = data.get(CONF_CLUSTER_ID)
         self._args: list[Any] | None = data.get(CONF_ARGS)
 
-        self._steps: list[dict[str, Any]] = list(data[CONF_STEPS])
+        self._steps: list[dict[str, Any]] = _normalize_steps(data[CONF_STEPS])
         self._expanded_targets_cache: list[str] = []
         self._targets_cache_dirty: bool = True
         self._watched_state_entity_ids: list[str] = []
         self._is_tuya_cache: dict[str, bool] = {}
+        self._temp_range_cache: dict[str, tuple[int, int]] = {}
 
         self._unsub_zha: Callable[[], None] | None = None
         self._unsub_state: Callable[[], None] | None = None
@@ -485,6 +646,174 @@ class LightCycleController:
         except (IndexError, KeyError, TypeError, ValueError):
             return 100
 
+    def _step_mode(self, step: dict[str, Any]) -> str:
+        return _normalize_step_mode(step.get(CONF_STEP_MODE))
+
+    def _step_temp_pct(self, step: dict[str, Any]) -> int:
+        try:
+            temp_pct = int(step.get(CONF_STEP_TEMP_PCT, DEFAULT_STEP_TEMP_PCT))
+        except (TypeError, ValueError):
+            temp_pct = DEFAULT_STEP_TEMP_PCT
+        return max(0, min(100, temp_pct))
+
+    def _step_rgb(self, step: dict[str, Any]) -> tuple[int, int, int]:
+        rgb = _parse_rgb_color(step.get(CONF_STEP_COLOR_RGB))
+        if rgb is not None:
+            return rgb
+
+        hex_color = _normalize_hex_color(step.get(CONF_STEP_COLOR_HEX))
+        if hex_color is not None:
+            parsed = _parse_rgb_color(hex_color)
+            if parsed is not None:
+                return parsed
+
+        return tuple(DEFAULT_STEP_COLOR_RGB)
+
+    def _supported_color_modes(self, entity_id: str) -> set[str]:
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return set()
+
+        raw_modes = state.attributes.get("supported_color_modes")
+        if isinstance(raw_modes, (list, tuple, set)):
+            return {
+                str(mode).strip().lower()
+                for mode in raw_modes
+                if isinstance(mode, str)
+            }
+        return set()
+
+    def _supports_color_temp(self, entity_id: str) -> bool:
+        modes = self._supported_color_modes(entity_id)
+        if "color_temp" in modes:
+            return True
+        if modes:
+            return False
+
+        state = self.hass.states.get(entity_id)
+        attrs = {} if state is None else state.attributes
+        return any(
+            attrs.get(key) is not None
+            for key in (
+                "color_temp_kelvin",
+                "color_temp",
+                "min_color_temp_kelvin",
+                "max_color_temp_kelvin",
+                "min_mireds",
+                "max_mireds",
+            )
+        )
+
+    def _refresh_temp_range_cache(self, entity_ids: list[str]) -> None:
+        for entity_id in entity_ids:
+            self._get_temp_range(entity_id)
+
+    def _extract_temp_range(self, entity_id: str) -> tuple[int, int]:
+        state = self.hass.states.get(entity_id)
+        attrs = state.attributes if state is not None else {}
+
+        min_kelvin = attrs.get("min_color_temp_kelvin")
+        max_kelvin = attrs.get("max_color_temp_kelvin")
+
+        if min_kelvin is None or max_kelvin is None:
+            min_mired = attrs.get("max_mireds")
+            max_mired = attrs.get("min_mireds")
+            if min_mired is not None and max_mired is not None:
+                try:
+                    min_kelvin = round(1_000_000 / int(min_mired))
+                    max_kelvin = round(1_000_000 / int(max_mired))
+                except (TypeError, ValueError):
+                    min_kelvin = None
+                    max_kelvin = None
+
+        try:
+            min_kelvin_int = int(min_kelvin)
+            max_kelvin_int = int(max_kelvin)
+        except (TypeError, ValueError):
+            min_kelvin_int = DEFAULT_TEMP_MIN_KELVIN
+            max_kelvin_int = DEFAULT_TEMP_MAX_KELVIN
+
+        if min_kelvin_int <= 0 or max_kelvin_int <= 0:
+            min_kelvin_int = DEFAULT_TEMP_MIN_KELVIN
+            max_kelvin_int = DEFAULT_TEMP_MAX_KELVIN
+
+        low = min(min_kelvin_int, max_kelvin_int)
+        high = max(min_kelvin_int, max_kelvin_int)
+        if low == high:
+            high = low + 1
+        return low, high
+
+    def _get_temp_range(self, entity_id: str) -> tuple[int, int]:
+        cached = self._temp_range_cache.get(entity_id)
+        if cached is not None:
+            return cached
+
+        computed = self._extract_temp_range(entity_id)
+        self._temp_range_cache[entity_id] = computed
+        return computed
+
+    def _target_kelvin_for_entity(self, entity_id: str, temp_pct: int) -> int:
+        min_kelvin, max_kelvin = self._get_temp_range(entity_id)
+        temp_ratio = max(0, min(100, temp_pct)) / 100
+        return round(min_kelvin + ((max_kelvin - min_kelvin) * temp_ratio))
+
+    def _color_payload_for_entity(
+        self, entity_id: str, rgb: tuple[int, int, int]
+    ) -> dict[str, Any]:
+        supported_modes = self._supported_color_modes(entity_id)
+        is_tuya = self._is_tuya_entity(entity_id)
+
+        hue, sat, _value = colorsys.rgb_to_hsv(
+            rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0
+        )
+        hs_color = (hue * 360.0, sat * 100.0)
+        hs_payload = {"hs_color": [round(hs_color[0], 1), round(hs_color[1], 1)]}
+        rgb_payload = {"rgb_color": [rgb[0], rgb[1], rgb[2]]}
+
+        if is_tuya and "hs" in supported_modes:
+            return hs_payload
+
+        if {"rgb", "rgbw", "rgbww"} & supported_modes:
+            return rgb_payload
+
+        if "hs" in supported_modes:
+            return hs_payload
+
+        if "xy" in supported_modes:
+            return hs_payload
+
+        if is_tuya:
+            return hs_payload
+        return rgb_payload
+
+    def _turn_on_payload_for_entity(
+        self, entity_id: str, step: dict[str, Any]
+    ) -> dict[str, Any]:
+        brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
+        brightness = round((brightness_pct / 100) * 255)
+        payload: dict[str, Any] = {
+            ATTR_BRIGHTNESS: brightness,
+            "brightness_pct": brightness_pct,
+        }
+
+        mode = self._step_mode(step)
+        if mode == STEP_MODE_COLOR:
+            payload.update(self._color_payload_for_entity(entity_id, self._step_rgb(step)))
+            return payload
+
+        if not self._supports_color_temp(entity_id):
+            return payload
+
+        temp_pct = self._step_temp_pct(step)
+        kelvin = self._target_kelvin_for_entity(entity_id, temp_pct)
+        state = self.hass.states.get(entity_id)
+        attrs = {} if state is None else state.attributes
+        if attrs.get("min_color_temp_kelvin") is not None or attrs.get("max_color_temp_kelvin") is not None:
+            payload["color_temp_kelvin"] = kelvin
+        else:
+            payload["color_temp"] = round(1_000_000 / max(1, kelvin))
+        return payload
+
     def _merged_entry_data(self) -> dict[str, Any]:
         """Return merged entry data+options from the latest in-memory entry."""
         current_entry = self.hass.config_entries.async_get_entry(self.entry.entry_id)
@@ -503,7 +832,7 @@ class LightCycleController:
         data = self._merged_entry_data()
         steps = data.get(CONF_STEPS, [])
         if isinstance(steps, list):
-            new_steps = list(steps)
+            new_steps = _normalize_steps(steps)
             if new_steps != self._steps:
                 LOGGER.info(
                     "Refreshed steps for entry %s: %s -> %s",
@@ -627,25 +956,18 @@ class LightCycleController:
             return
 
         step = self._steps[index - 1]
-        brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
-        brightness = round((brightness_pct / 100) * 255)
         label = step.get("label")
+        mode = self._step_mode(step)
+        brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
 
         LOGGER.debug(
-            "Turning on %s to %s%% (brightness=%s label=%s)",
+            "Turning on %s to %s%% (mode=%s label=%s)",
             self._target_entity_ids,
             brightness_pct,
-            brightness,
+            mode,
             label,
         )
-        await self._async_call_light_service(
-            "turn_on",
-            {
-                ATTR_BRIGHTNESS: brightness,
-                "brightness_pct": brightness_pct,
-            },
-            expanded_before,
-        )
+        await self._async_apply_step_to_entities(step, expanded_before)
 
     async def _async_reconcile_expanded_targets(
         self, applied_index: int, previous_targets: list[str]
@@ -670,13 +992,7 @@ class LightCycleController:
             return
 
         step = self._steps[applied_index - 1]
-        brightness_pct = int(step[CONF_STEP_BRIGHTNESS_PCT])
-        brightness = round((brightness_pct / 100) * 255)
-        await self._async_call_light_service_best_effort(
-            "turn_on",
-            added_targets,
-            {ATTR_BRIGHTNESS: brightness, "brightness_pct": brightness_pct},
-        )
+        await self._async_apply_step_to_entities(step, added_targets)
 
     async def _async_call_light_service(
         self,
@@ -712,6 +1028,29 @@ class LightCycleController:
             service, fallback_targets, service_data
         )
 
+    async def _async_apply_step_to_entities(
+        self, step: dict[str, Any], entity_ids: list[str]
+    ) -> None:
+        if not entity_ids:
+            return
+
+        payload_by_entity: dict[str, dict[str, Any]] = {}
+        for entity_id in entity_ids:
+            payload_by_entity[entity_id] = self._turn_on_payload_for_entity(entity_id, step)
+
+        failures = await self._async_call_light_service_many_with_payload(
+            "turn_on", payload_by_entity
+        )
+
+        if not failures:
+            return
+
+        for entity_id, exc in failures:
+            LOGGER.warning("light.turn_on failed for %s: %s", entity_id, exc)
+
+        if len(failures) == len(entity_ids):
+            raise failures[0][1]
+
     def _expanded_target_entity_ids(self) -> list[str]:
         """Return leaf `light.*` entity ids to call.
 
@@ -740,6 +1079,7 @@ class LightCycleController:
         changed = expanded != self._expanded_targets_cache
         self._expanded_targets_cache = expanded
         self._targets_cache_dirty = False
+        self._refresh_temp_range_cache(self._expanded_targets_cache)
         return list(self._expanded_targets_cache), changed
 
     def _expanded_entity_ids(self, root_entity_ids: list[str]) -> list[str]:
@@ -811,6 +1151,38 @@ class LightCycleController:
         except Exception as exc:
             return exc
         return None
+
+    async def _async_call_light_service_many_with_payload(
+        self, service: str, payload_by_entity: dict[str, dict[str, Any]]
+    ) -> list[tuple[str, Exception]]:
+        if not payload_by_entity:
+            return []
+
+        ordered_entity_ids = self._ordered_entity_ids_for_dispatch(
+            list(payload_by_entity.keys())
+        )
+        max_parallel_calls = self._max_parallel_calls()
+        if max_parallel_calls <= 1 or len(ordered_entity_ids) == 1:
+            failures: list[tuple[str, Exception]] = []
+            for entity_id in ordered_entity_ids:
+                exc = await self._async_call_light_service_single(
+                    service, entity_id, payload_by_entity[entity_id]
+                )
+                if exc is not None:
+                    failures.append((entity_id, exc))
+            return failures
+
+        semaphore = asyncio.Semaphore(max_parallel_calls)
+
+        async def _call(entity_id: str) -> tuple[str, Exception | None]:
+            async with semaphore:
+                exc = await self._async_call_light_service_single(
+                    service, entity_id, payload_by_entity[entity_id]
+                )
+            return entity_id, exc
+
+        results = await asyncio.gather(*[_call(entity_id) for entity_id in ordered_entity_ids])
+        return [(entity_id, exc) for entity_id, exc in results if exc is not None]
 
     async def _async_call_light_service_many(
         self, service: str, entity_ids: list[str], service_data: dict[str, Any]

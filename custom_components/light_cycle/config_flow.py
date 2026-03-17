@@ -27,10 +27,18 @@ from .const import (
     CONF_REMOTE_DEVICE_ID,
     CONF_REMOTE_IEEE,
     CONF_STEP_BRIGHTNESS_PCT,
+    CONF_STEP_COLOR_HEX,
+    CONF_STEP_COLOR_RGB,
     CONF_STEP_LABEL,
+    CONF_STEP_MODE,
+    CONF_STEP_TEMP_PCT,
     CONF_STEPS,
     CONF_TARGET_ENTITY_ID,
     CONF_TARGET_ENTITY_IDS,
+    DEFAULT_STEP_COLOR_HEX,
+    DEFAULT_STEP_COLOR_RGB,
+    DEFAULT_STEP_MODE,
+    DEFAULT_STEP_TEMP_PCT,
     DEFAULT_CAPTURE_TIMEOUT_SECONDS,
     DEFAULT_MAX_PARALLEL_CALLS,
     DOMAIN,
@@ -38,6 +46,8 @@ from .const import (
     MAX_MAX_PARALLEL_CALLS,
     MIN_MAX_PARALLEL_CALLS,
     MIN_ON_STEPS,
+    STEP_MODE_COLOR,
+    STEP_MODE_WHITE_TEMP,
 )
 from .settings import async_get_settings, async_set_max_parallel_calls
 
@@ -55,10 +65,105 @@ def _step_brightness_key(step: int) -> str:
     return f"step_{step}_{CONF_STEP_BRIGHTNESS_PCT}"
 
 
+def _step_mode_key(step: int) -> str:
+    return f"step_{step}_{CONF_STEP_MODE}"
+
+
+def _step_temp_pct_key(step: int) -> str:
+    return f"step_{step}_{CONF_STEP_TEMP_PCT}"
+
+
+def _step_color_hex_key(step: int) -> str:
+    return f"step_{step}_{CONF_STEP_COLOR_HEX}"
+
+
+def _step_color_rgb_key(step: int) -> str:
+    return f"step_{step}_{CONF_STEP_COLOR_RGB}"
+
+
 def _default_brightness_pct(step: int, total_steps: int) -> int:
     if total_steps <= 0:
         return 100
     return max(1, min(100, round(step * 100 / total_steps)))
+
+
+def _normalize_step_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode == STEP_MODE_COLOR:
+        return STEP_MODE_COLOR
+    return STEP_MODE_WHITE_TEMP
+
+
+def _normalize_hex_color(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if len(raw) != 6:
+        return None
+    try:
+        int(raw, 16)
+    except ValueError:
+        return None
+    return f"#{raw.upper()}"
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    normalized = _normalize_hex_color(value)
+    if normalized is None:
+        raise ValueError("Invalid hex color")
+    raw = normalized[1:]
+    return (int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16))
+
+
+def _coerce_rgb_channel(value: Any) -> int | None:
+    try:
+        channel = int(value)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= channel <= 255):
+        return None
+    return channel
+
+
+def _parse_rgb_color_value(value: Any) -> tuple[int, int, int] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        channels = [_coerce_rgb_channel(channel) for channel in value]
+        if all(channel is not None for channel in channels):
+            return int(channels[0]), int(channels[1]), int(channels[2])
+        return None
+
+    if isinstance(value, dict):
+        if {"r", "g", "b"}.issubset(value):
+            channels = [
+                _coerce_rgb_channel(value.get("r")),
+                _coerce_rgb_channel(value.get("g")),
+                _coerce_rgb_channel(value.get("b")),
+            ]
+            if all(channel is not None for channel in channels):
+                return int(channels[0]), int(channels[1]), int(channels[2])
+        if {"red", "green", "blue"}.issubset(value):
+            channels = [
+                _coerce_rgb_channel(value.get("red")),
+                _coerce_rgb_channel(value.get("green")),
+                _coerce_rgb_channel(value.get("blue")),
+            ]
+            if all(channel is not None for channel in channels):
+                return int(channels[0]), int(channels[1]), int(channels[2])
+        return None
+
+    if isinstance(value, str):
+        normalized = _normalize_hex_color(value)
+        if normalized is None:
+            return None
+        return _hex_to_rgb(normalized)
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -154,6 +259,47 @@ def _max_parallel_calls_selector() -> selector.NumberSelector:
     )
 
 
+def _step_mode_field() -> Any:
+    """Return mode dropdown with broad Home Assistant compatibility."""
+    return vol.In(
+        {
+            STEP_MODE_WHITE_TEMP: "White & temperature",
+            STEP_MODE_COLOR: "Color",
+        }
+    )
+
+
+def _temp_pct_selector() -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0,
+            max=100,
+            step=1,
+            mode=selector.NumberSelectorMode.SLIDER,
+            unit_of_measurement="%",
+        )
+    )
+
+
+def _color_rgb_selector_field() -> tuple[Any, bool]:
+    """Return (field, is_text_fallback)."""
+    color_selector = getattr(selector, "ColorRGBSelector", None)
+    if color_selector is None:
+        return selector.TextSelector(), True
+
+    try:
+        return color_selector(), False
+    except TypeError:
+        config_cls = getattr(selector, "ColorRGBSelectorConfig", None)
+        if config_cls is not None:
+            try:
+                return color_selector(config_cls()), False
+            except TypeError:
+                pass
+
+    return selector.TextSelector(), True
+
+
 def _boolean_field() -> Any:
     """Return a backwards-compatible boolean field for config flows."""
     boolean_selector = getattr(selector, "BooleanSelector", None)
@@ -168,7 +314,7 @@ def _boolean_field() -> Any:
 class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Light Cycle Controller."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         self._instance_name: str | None = None
@@ -387,6 +533,10 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             for step_num in range(1, on_steps + 1):
                 label_key = _step_label_key(step_num)
                 brightness_key = _step_brightness_key(step_num)
+                mode_key = _step_mode_key(step_num)
+                temp_key = _step_temp_pct_key(step_num)
+                color_hex_key = _step_color_hex_key(step_num)
+                color_rgb_key = _step_color_rgb_key(step_num)
 
                 label = str(user_input.get(label_key, "")).strip()
                 if not label:
@@ -400,9 +550,41 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     continue
 
                 brightness_pct = max(1, min(100, brightness_pct))
-                steps.append(
-                    {CONF_STEP_LABEL: label, CONF_STEP_BRIGHTNESS_PCT: brightness_pct}
-                )
+                mode = _normalize_step_mode(user_input.get(mode_key))
+                step_data: dict[str, Any] = {
+                    CONF_STEP_LABEL: label,
+                    CONF_STEP_BRIGHTNESS_PCT: brightness_pct,
+                    CONF_STEP_MODE: mode,
+                }
+
+                if mode == STEP_MODE_WHITE_TEMP:
+                    try:
+                        temp_pct = int(user_input[temp_key])
+                    except (TypeError, ValueError, KeyError):
+                        errors[temp_key] = "invalid_temp_pct"
+                        continue
+
+                    step_data[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
+                    step_data[CONF_STEP_COLOR_HEX] = DEFAULT_STEP_COLOR_HEX
+                    step_data[CONF_STEP_COLOR_RGB] = list(DEFAULT_STEP_COLOR_RGB)
+                else:
+                    color_hex = _normalize_hex_color(user_input.get(color_hex_key))
+                    rgb_value = _parse_rgb_color_value(user_input.get(color_rgb_key))
+
+                    if color_hex is not None:
+                        rgb = _hex_to_rgb(color_hex)
+                    elif rgb_value is not None:
+                        rgb = rgb_value
+                        color_hex = _rgb_to_hex(rgb)
+                    else:
+                        errors[color_hex_key] = "invalid_color"
+                        continue
+
+                    step_data[CONF_STEP_TEMP_PCT] = DEFAULT_STEP_TEMP_PCT
+                    step_data[CONF_STEP_COLOR_HEX] = color_hex
+                    step_data[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+
+                steps.append(step_data)
 
             if not errors:
                 assert self._instance_name is not None
@@ -437,6 +619,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(title=self._instance_name, data=data)
 
         schema_dict: dict[Any, Any] = {}
+        color_rgb_field, rgb_field_is_text = _color_rgb_selector_field()
         for step_num in range(1, on_steps + 1):
             schema_dict[
                 vol.Required(
@@ -457,6 +640,34 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     unit_of_measurement="%",
                 )
             )
+            schema_dict[
+                vol.Required(
+                    _step_mode_key(step_num),
+                    default=STEP_MODE_WHITE_TEMP,
+                )
+            ] = _step_mode_field()
+            schema_dict[
+                vol.Required(
+                    _step_temp_pct_key(step_num),
+                    default=DEFAULT_STEP_TEMP_PCT,
+                )
+            ] = _temp_pct_selector()
+            schema_dict[
+                vol.Required(
+                    _step_color_rgb_key(step_num),
+                    default=(
+                        DEFAULT_STEP_COLOR_HEX
+                        if rgb_field_is_text
+                        else list(DEFAULT_STEP_COLOR_RGB)
+                    ),
+                )
+            ] = color_rgb_field
+            schema_dict[
+                vol.Required(
+                    _step_color_hex_key(step_num),
+                    default=DEFAULT_STEP_COLOR_HEX,
+                )
+            ] = selector.TextSelector()
 
         return self.async_show_form(
             step_id="steps",
@@ -681,6 +892,10 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             for step_num in range(1, on_steps + 1):
                 label_key = _step_label_key(step_num)
                 brightness_key = _step_brightness_key(step_num)
+                mode_key = _step_mode_key(step_num)
+                temp_key = _step_temp_pct_key(step_num)
+                color_hex_key = _step_color_hex_key(step_num)
+                color_rgb_key = _step_color_rgb_key(step_num)
 
                 label = str(user_input.get(label_key, "")).strip()
                 if not label:
@@ -694,9 +909,41 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     continue
 
                 brightness_pct = max(1, min(100, brightness_pct))
-                steps.append(
-                    {CONF_STEP_LABEL: label, CONF_STEP_BRIGHTNESS_PCT: brightness_pct}
-                )
+                mode = _normalize_step_mode(user_input.get(mode_key))
+                step_data: dict[str, Any] = {
+                    CONF_STEP_LABEL: label,
+                    CONF_STEP_BRIGHTNESS_PCT: brightness_pct,
+                    CONF_STEP_MODE: mode,
+                }
+
+                if mode == STEP_MODE_WHITE_TEMP:
+                    try:
+                        temp_pct = int(user_input[temp_key])
+                    except (TypeError, ValueError, KeyError):
+                        errors[temp_key] = "invalid_temp_pct"
+                        continue
+
+                    step_data[CONF_STEP_TEMP_PCT] = max(0, min(100, temp_pct))
+                    step_data[CONF_STEP_COLOR_HEX] = DEFAULT_STEP_COLOR_HEX
+                    step_data[CONF_STEP_COLOR_RGB] = list(DEFAULT_STEP_COLOR_RGB)
+                else:
+                    color_hex = _normalize_hex_color(user_input.get(color_hex_key))
+                    rgb_value = _parse_rgb_color_value(user_input.get(color_rgb_key))
+
+                    if color_hex is not None:
+                        rgb = _hex_to_rgb(color_hex)
+                    elif rgb_value is not None:
+                        rgb = rgb_value
+                        color_hex = _rgb_to_hex(rgb)
+                    else:
+                        errors[color_hex_key] = "invalid_color"
+                        continue
+
+                    step_data[CONF_STEP_TEMP_PCT] = DEFAULT_STEP_TEMP_PCT
+                    step_data[CONF_STEP_COLOR_HEX] = color_hex
+                    step_data[CONF_STEP_COLOR_RGB] = [rgb[0], rgb[1], rgb[2]]
+
+                steps.append(step_data)
 
             if not errors:
                 assert self._remote_ieee is not None
@@ -726,6 +973,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                 return self.async_create_entry(title="", data=options)
 
         schema_dict: dict[Any, Any] = {}
+        color_rgb_field, rgb_field_is_text = _color_rgb_selector_field()
         for step_num in range(1, on_steps + 1):
             existing = (
                 self._existing_steps[step_num - 1]
@@ -742,6 +990,33 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                 if isinstance(existing, dict) and existing.get(CONF_STEP_BRIGHTNESS_PCT)
                 else _default_brightness_pct(step_num, on_steps)
             )
+            default_mode = (
+                _normalize_step_mode(existing.get(CONF_STEP_MODE))
+                if isinstance(existing, dict)
+                else DEFAULT_STEP_MODE
+            )
+            default_temp_pct = (
+                int(existing.get(CONF_STEP_TEMP_PCT))
+                if isinstance(existing, dict)
+                and existing.get(CONF_STEP_TEMP_PCT) is not None
+                else DEFAULT_STEP_TEMP_PCT
+            )
+            default_color_hex = (
+                _normalize_hex_color(existing.get(CONF_STEP_COLOR_HEX))
+                if isinstance(existing, dict)
+                else None
+            )
+            if default_color_hex is None:
+                default_color_hex = DEFAULT_STEP_COLOR_HEX
+            default_rgb = (
+                _parse_rgb_color_value(existing.get(CONF_STEP_COLOR_RGB))
+                if isinstance(existing, dict)
+                else None
+            )
+            if default_rgb is None:
+                default_rgb = _parse_rgb_color_value(default_color_hex)
+            if default_rgb is None:
+                default_rgb = tuple(DEFAULT_STEP_COLOR_RGB)
 
             schema_dict[vol.Required(_step_label_key(step_num), default=default_label)] = (
                 selector.TextSelector()
@@ -757,6 +1032,34 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     unit_of_measurement="%",
                 )
             )
+            schema_dict[
+                vol.Required(
+                    _step_mode_key(step_num),
+                    default=default_mode,
+                )
+            ] = _step_mode_field()
+            schema_dict[
+                vol.Required(
+                    _step_temp_pct_key(step_num),
+                    default=max(0, min(100, default_temp_pct)),
+                )
+            ] = _temp_pct_selector()
+            schema_dict[
+                vol.Required(
+                    _step_color_rgb_key(step_num),
+                    default=(
+                        default_color_hex
+                        if rgb_field_is_text
+                        else [default_rgb[0], default_rgb[1], default_rgb[2]]
+                    ),
+                )
+            ] = color_rgb_field
+            schema_dict[
+                vol.Required(
+                    _step_color_hex_key(step_num),
+                    default=default_color_hex,
+                )
+            ] = selector.TextSelector()
 
         return self.async_show_form(
             step_id="steps",

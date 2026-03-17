@@ -114,6 +114,13 @@ async def async_get_config_entry_diagnostics(
     }
 
     if controller is not None:
+        temp_range_cache = {
+            entity_id: [bounds[0], bounds[1]]
+            for entity_id, bounds in getattr(controller, "_temp_range_cache", {}).items()
+            if isinstance(entity_id, str)
+            and isinstance(bounds, tuple)
+            and len(bounds) == 2
+        }
         data["controller"] = {
             "resolved_index": getattr(controller, "_resolved_index", None),
             "classified_index": classified_index,
@@ -124,6 +131,7 @@ async def async_get_config_entry_diagnostics(
             "average_pct": getattr(controller, "_last_average_pct", None),
             "sample_counts": getattr(controller, "_last_sample_counts", None),
             "max_parallel_calls": get_max_parallel_calls(hass),
+            "temp_range_cache": temp_range_cache,
             "state_sync_suppressed": bool(
                 time.monotonic()
                 < float(getattr(controller, "_ignore_state_changes_until", 0.0))

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.12
+## 0.1.13
 
 - Add integration-wide `max_parallel_calls` setting (persisted in storage), asked during first entry setup and editable later in the entry Configure flow.
 - Apply light service calls with capped async fan-out (instead of strictly sequential calls) for better responsiveness on large collections.
@@ -8,6 +8,10 @@
 - Keep collection expansion cached in memory for the press hot path; re-expand after apply and patch newly discovered lights to the same level.
 - Include concurrency and average collection metrics in dump/diagnostics for easier tuning and debugging.
 - Automate GitHub Releases from `CHANGELOG.md` on `main` pushes (tag + release creation when a new version heading appears).
+- Add per-step mode support: `white_temp` (0–100% warmth over each light’s Kelvin range) or `color` (picker + hex).
+- Keep sync classification brightness-only when lights are changed externally (voice/UI), so cycle inference remains stable.
+- Add config-entry migration to v2: existing steps default to white mode at warmest `1%` temp.
+- Apply per-entity turn_on payloads for mixed collections, with Tuya-preferring `hs_color` mapping to avoid hue skew.
 
 ## 0.1.11
 

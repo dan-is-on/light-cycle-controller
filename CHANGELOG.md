@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.22
+
+- Fix a Configure-flow 500 caused by some device registry identifiers not being simple 2-tuples while building the filtered ZHA remote picker.
+
 ## 0.1.21
 
 - Filter the ZHA device picker down to likely remotes/buttons by inspecting device automations, while still falling back safely if Home Assistant cannot provide that metadata.

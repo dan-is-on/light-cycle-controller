@@ -332,9 +332,11 @@ def _signature_from_zha_event(ieee: str, data: dict[str, Any]) -> _ZhaButtonSign
 
 def _zha_ieee_from_device_entry(device_entry: dr.DeviceEntry) -> str | None:
     """Extract ZHA IEEE identifier from a selected device registry entry."""
-    for domain, identifier in device_entry.identifiers:
-        if domain == "zha":
-            return str(identifier)
+    for identifier in device_entry.identifiers:
+        if not isinstance(identifier, (tuple, list)) or len(identifier) < 2:
+            continue
+        if identifier[0] == "zha":
+            return str(identifier[1])
     return None
 
 

@@ -28,7 +28,10 @@ from .const import (
     CONF_ARGS,
     CONF_CLUSTER_ID,
     CONF_COMMAND,
+    CONF_DOUBLE_PRESS_BINDING,
     CONF_ENDPOINT_ID,
+    CONF_GESTURE_TARGET_INDEX,
+    CONF_LONG_PRESS_BINDING,
     CONF_REMOTE_IEEE,
     CONF_STEP_BRIGHTNESS_PCT,
     CONF_STEP_COLOR_HEX,
@@ -45,6 +48,8 @@ from .const import (
     DEFAULT_TEMP_MAX_KELVIN,
     DEFAULT_TEMP_MIN_KELVIN,
     DOMAIN,
+    GESTURE_DOUBLE_PRESS,
+    GESTURE_LONG_PRESS,
     STEP_MODE_COLOR,
     STEP_MODE_WHITE_TEMP,
 )
@@ -222,6 +227,64 @@ def _normalize_steps(steps: Any) -> list[dict[str, Any]]:
     return [_normalize_step(step) for step in steps]
 
 
+def _normalize_signature(
+    endpoint_id: Any,
+    command: Any,
+    cluster_id: Any,
+    args: Any,
+) -> dict[str, Any] | None:
+    """Normalize stored/captured signature fields to a stable matching structure."""
+    if endpoint_id is None or command is None:
+        return None
+
+    try:
+        normalized_endpoint_id = int(endpoint_id)
+    except (TypeError, ValueError):
+        return None
+
+    normalized_cluster_id: int | None = None
+    if cluster_id is not None:
+        try:
+            normalized_cluster_id = int(cluster_id)
+        except (TypeError, ValueError):
+            return None
+
+    normalized_args = list(args) if args is not None else None
+    return {
+        CONF_ENDPOINT_ID: normalized_endpoint_id,
+        CONF_COMMAND: str(command),
+        CONF_CLUSTER_ID: normalized_cluster_id,
+        CONF_ARGS: normalized_args,
+    }
+
+
+def _normalize_stored_gesture_binding(
+    binding: Any, max_target_index: int
+) -> dict[str, Any] | None:
+    """Normalize one optional long/double press binding from storage."""
+    if not isinstance(binding, dict):
+        return None
+
+    signature = _normalize_signature(
+        binding.get(CONF_ENDPOINT_ID),
+        binding.get(CONF_COMMAND),
+        binding.get(CONF_CLUSTER_ID),
+        binding.get(CONF_ARGS),
+    )
+    if signature is None:
+        return None
+
+    try:
+        target_index = int(binding.get(CONF_GESTURE_TARGET_INDEX, 0))
+    except (TypeError, ValueError):
+        target_index = 0
+
+    return {
+        **signature,
+        CONF_GESTURE_TARGET_INDEX: max(0, min(max_target_index, target_index)),
+    }
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Light Cycle Controller from a config entry."""
     # Keep all runtime integration state under `hass.data[DOMAIN]`.
@@ -254,32 +317,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate config entries to newer schema versions."""
-    if entry.version > 2:
+    if entry.version > 3:
         LOGGER.error("Unsupported config entry version %s", entry.version)
         return False
 
-    if entry.version == 2:
+    if entry.version == 3:
         return True
 
-    LOGGER.info("Migrating entry %s from version %s to 2", entry.entry_id, entry.version)
-
-    # Copy both sections because older entries may store values in either data or options.
     new_data = dict(entry.data)
     new_options = dict(entry.options)
+    version = entry.version
 
-    # Ensure every migrated step has explicit mode/temp/color fields so runtime logic is stable.
-    if CONF_STEPS in new_data:
-        new_data[CONF_STEPS] = _normalize_steps(new_data.get(CONF_STEPS))
-    if CONF_STEPS in new_options:
-        new_options[CONF_STEPS] = _normalize_steps(new_options.get(CONF_STEPS))
+    if version < 2:
+        LOGGER.info(
+            "Migrating entry %s from version %s to 2", entry.entry_id, entry.version
+        )
+
+        # Copy both sections because older entries may store values in either data or options.
+        # Ensure every migrated step has explicit mode/temp/color fields so runtime logic is stable.
+        if CONF_STEPS in new_data:
+            new_data[CONF_STEPS] = _normalize_steps(new_data.get(CONF_STEPS))
+        if CONF_STEPS in new_options:
+            new_options[CONF_STEPS] = _normalize_steps(new_options.get(CONF_STEPS))
+        version = 2
+
+    if version < 3:
+        LOGGER.info("Migrating entry %s from version %s to 3", entry.entry_id, version)
+
+        for container in (new_data, new_options):
+            max_target_index = len(_normalize_steps(container.get(CONF_STEPS)))
+            for binding_key in (CONF_LONG_PRESS_BINDING, CONF_DOUBLE_PRESS_BINDING):
+                normalized_binding = _normalize_stored_gesture_binding(
+                    container.get(binding_key),
+                    max_target_index,
+                )
+                if normalized_binding is not None:
+                    container[binding_key] = normalized_binding
+                else:
+                    container.pop(binding_key, None)
+        version = 3
 
     hass.config_entries.async_update_entry(
         entry,
         data=new_data,
         options=new_options,
-        version=2,
+        version=version,
     )
-    LOGGER.info("Migration of entry %s to version 2 complete", entry.entry_id)
+    LOGGER.info("Migration of entry %s to version %s complete", entry.entry_id, version)
     return True
 
 
@@ -412,6 +496,24 @@ async def _async_handle_dump_service(hass: HomeAssistant, call) -> None:
             merged.get(CONF_CLUSTER_ID),
             merged.get(CONF_ARGS),
         )
+        for gesture_name, binding_key in (
+            (GESTURE_LONG_PRESS, CONF_LONG_PRESS_BINDING),
+            (GESTURE_DOUBLE_PRESS, CONF_DOUBLE_PRESS_BINDING),
+        ):
+            binding = _normalize_stored_gesture_binding(
+                merged.get(binding_key),
+                len(controller._steps),
+            )
+            LOGGER.info(
+                "Dump: entry=%s gesture=%s target_index=%s endpoint=%s command=%s cluster_id=%s args=%s",
+                controller.entry.entry_id,
+                gesture_name,
+                None if binding is None else binding.get(CONF_GESTURE_TARGET_INDEX),
+                None if binding is None else binding.get(CONF_ENDPOINT_ID),
+                None if binding is None else binding.get(CONF_COMMAND),
+                None if binding is None else binding.get(CONF_CLUSTER_ID),
+                None if binding is None else binding.get(CONF_ARGS),
+            )
         LOGGER.info(
             "Dump: entry=%s steps=%s",
             controller.entry.entry_id,
@@ -472,13 +574,19 @@ class LightCycleController:
         # Core matching configuration for the remote button and target collection.
         self._target_entity_ids: list[str] = _coerce_target_entity_ids(data)
         self._remote_ieee: str = data[CONF_REMOTE_IEEE]
-        self._endpoint_id: int = int(data[CONF_ENDPOINT_ID])
-        self._command: str = str(data[CONF_COMMAND])
-        self._cluster_id: int | None = data.get(CONF_CLUSTER_ID)
-        self._args: list[Any] | None = data.get(CONF_ARGS)
 
         # Normalized step configuration and runtime caches derived from target entities.
         self._steps: list[dict[str, Any]] = _normalize_steps(data[CONF_STEPS])
+        self._cycle_signature: dict[str, Any] = (
+            _normalize_signature(
+                data.get(CONF_ENDPOINT_ID),
+                data.get(CONF_COMMAND),
+                data.get(CONF_CLUSTER_ID),
+                data.get(CONF_ARGS),
+            )
+            or {}
+        )
+        self._gesture_bindings: dict[str, dict[str, Any]] = {}
         self._expanded_targets_cache: list[str] = []
         self._targets_cache_dirty: bool = True
         self._watched_state_entity_ids: list[str] = []
@@ -505,6 +613,7 @@ class LightCycleController:
         # Ensure local caches are in sync before subscriptions begin.
         self._refresh_targets_from_entry()
         self._refresh_steps_from_entry()
+        self._refresh_event_bindings_from_entry()
         self._refresh_expanded_targets(force=True)
         self._resubscribe_state_listener()
 
@@ -519,14 +628,15 @@ class LightCycleController:
             len(self._expanded_targets_cache),
             len(self._steps),
             self._remote_ieee,
-            self._endpoint_id,
-            self._command,
+            self._cycle_signature.get(CONF_ENDPOINT_ID),
+            self._cycle_signature.get(CONF_COMMAND),
         )
         LOGGER.info(
-            "Controller %s steps for %s: %s",
+            "Controller %s steps for %s: %s optional_gestures=%s",
             self.entry.entry_id,
             self._target_entity_ids,
             [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._steps],
+            sorted(self._gesture_bindings),
         )
 
     async def async_stop(self) -> None:
@@ -560,39 +670,85 @@ class LightCycleController:
     @callback
     def _on_zha_event(self, event: Event) -> None:
         """Schedule press handling for matching ZHA events."""
-        if not self._matches_zha_event(event.data):
+        # Re-read saved signatures so freshly edited gesture bindings are reflected promptly.
+        self._refresh_steps_from_entry()
+        self._refresh_event_bindings_from_entry()
+
+        match = self._matched_action_for_event(event.data)
+        if match is None:
             return
 
         # Run press handling asynchronously so event bus processing stays non-blocking.
-        self.hass.async_create_task(self._async_handle_press())
+        action, target_index = match
+        if action == "cycle":
+            self.hass.async_create_task(self._async_handle_press())
+            return
 
-    def _matches_zha_event(self, data: dict[str, Any]) -> bool:
-        """Return whether an incoming zha_event matches this controller signature."""
+        self.hass.async_create_task(
+            self._async_handle_direct_target(action, int(target_index or 0))
+        )
+
+    def _matches_signature(
+        self, signature: dict[str, Any] | None, data: dict[str, Any]
+    ) -> bool:
+        """Return whether an incoming zha_event matches one normalized signature."""
+        if not signature:
+            return False
+
         device_ieee = data.get("device_ieee")
         if device_ieee != self._remote_ieee:
             return False
 
         endpoint_id = data.get(CONF_ENDPOINT_ID)
-        if endpoint_id is None or int(endpoint_id) != self._endpoint_id:
+        try:
+            endpoint_id_int = int(endpoint_id)
+        except (TypeError, ValueError):
+            return False
+        if endpoint_id_int != int(signature[CONF_ENDPOINT_ID]):
             return False
 
         command = data.get(CONF_COMMAND)
-        if command is None or str(command) != self._command:
+        if command is None or str(command) != str(signature[CONF_COMMAND]):
             return False
 
-        if self._cluster_id is not None:
+        cluster_id = signature.get(CONF_CLUSTER_ID)
+        if cluster_id is not None:
             # Optional cluster filtering helps disambiguate remotes with reused commands.
-            cluster_id = data.get(CONF_CLUSTER_ID)
-            if cluster_id is None or int(cluster_id) != int(self._cluster_id):
+            event_cluster_id = data.get(CONF_CLUSTER_ID)
+            try:
+                event_cluster_id_int = int(event_cluster_id)
+            except (TypeError, ValueError):
+                return False
+            if event_cluster_id_int != int(cluster_id):
                 return False
 
-        if self._args is not None:
+        args = signature.get(CONF_ARGS)
+        if args is not None:
             # Optional args filtering helps disambiguate field-specific button payloads.
-            args = data.get(CONF_ARGS, [])
-            if list(args) != list(self._args):
+            event_args = data.get(CONF_ARGS, [])
+            if list(event_args) != list(args):
                 return False
 
         return True
+
+    def _matched_action_for_event(
+        self, data: dict[str, Any]
+    ) -> tuple[str, int | None] | None:
+        """Return the controller action for one incoming zha_event, if any."""
+        if self._matches_signature(self._cycle_signature, data):
+            return ("cycle", None)
+
+        for gesture_name in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS):
+            binding = self._gesture_bindings.get(gesture_name)
+            if binding is None:
+                continue
+            if self._matches_signature(binding, data):
+                return (
+                    gesture_name,
+                    int(binding.get(CONF_GESTURE_TARGET_INDEX, 0)),
+                )
+
+        return None
 
     def _classify_state(self, _state: State | None = None) -> int:
         """Classify cycle index from averaged brightness across the collection."""
@@ -983,6 +1139,57 @@ class LightCycleController:
             if self._resolved_index > len(self._steps):
                 self._resolved_index = len(self._steps)
 
+    def _refresh_event_bindings_from_entry(self) -> None:
+        """Refresh primary/optional button bindings from latest config entry values."""
+        data = self._merged_entry_data()
+
+        remote_ieee = data.get(CONF_REMOTE_IEEE)
+        if isinstance(remote_ieee, str) and remote_ieee != self._remote_ieee:
+            LOGGER.info(
+                "Refreshed remote IEEE for entry %s: %s -> %s",
+                self.entry.entry_id,
+                self._remote_ieee,
+                remote_ieee,
+            )
+            self._remote_ieee = remote_ieee
+
+        new_cycle_signature = _normalize_signature(
+            data.get(CONF_ENDPOINT_ID),
+            data.get(CONF_COMMAND),
+            data.get(CONF_CLUSTER_ID),
+            data.get(CONF_ARGS),
+        )
+        if new_cycle_signature is not None and new_cycle_signature != self._cycle_signature:
+            LOGGER.info(
+                "Refreshed primary button signature for entry %s: %s -> %s",
+                self.entry.entry_id,
+                self._cycle_signature,
+                new_cycle_signature,
+            )
+            self._cycle_signature = new_cycle_signature
+
+        max_target_index = len(self._steps)
+        new_gesture_bindings: dict[str, dict[str, Any]] = {}
+        for gesture_name, binding_key in (
+            (GESTURE_LONG_PRESS, CONF_LONG_PRESS_BINDING),
+            (GESTURE_DOUBLE_PRESS, CONF_DOUBLE_PRESS_BINDING),
+        ):
+            normalized_binding = _normalize_stored_gesture_binding(
+                data.get(binding_key),
+                max_target_index,
+            )
+            if normalized_binding is not None:
+                new_gesture_bindings[gesture_name] = normalized_binding
+
+        if new_gesture_bindings != self._gesture_bindings:
+            LOGGER.info(
+                "Refreshed optional gesture bindings for entry %s: %s -> %s",
+                self.entry.entry_id,
+                sorted(self._gesture_bindings),
+                sorted(new_gesture_bindings),
+            )
+            self._gesture_bindings = new_gesture_bindings
+
     def _refresh_targets_from_entry(self) -> None:
         """Refresh target entity collection from latest config entry values."""
         data = self._merged_entry_data()
@@ -1046,6 +1253,7 @@ class LightCycleController:
             # Refresh mutable config first so runtime reflects latest options flow changes.
             self._refresh_targets_from_entry()
             self._refresh_steps_from_entry()
+            self._refresh_event_bindings_from_entry()
 
             expanded_before = self._cached_expanded_target_entity_ids()
             current_index = self._classify_expanded_members(expanded_before)
@@ -1085,6 +1293,54 @@ class LightCycleController:
                 self._resolved_index = next_index
                 # Reconcile if group expansion changed during apply.
                 await self._async_reconcile_expanded_targets(next_index, expanded_before)
+                self._ignore_state_changes_until = max(
+                    self._ignore_state_changes_until,
+                    time.monotonic() + 0.5,
+                )
+
+    async def _async_handle_direct_target(
+        self, gesture_name: str, target_index: int
+    ) -> None:
+        """Apply a directly mapped long/double press target."""
+        async with self._press_lock:
+            self._refresh_targets_from_entry()
+            self._refresh_steps_from_entry()
+            self._refresh_event_bindings_from_entry()
+
+            bounded_target_index = max(0, min(len(self._steps), int(target_index)))
+            expanded_before = self._cached_expanded_target_entity_ids()
+
+            target_count = len(expanded_before)
+            settle_seconds = max(1.5, min(8.0, target_count * 0.08))
+            self._ignore_state_changes_until = time.monotonic() + settle_seconds
+
+            LOGGER.debug(
+                "Direct gesture: entry=%s title=%s gesture=%s target=%s steps=%s targets=%s",
+                self.entry.entry_id,
+                self.entry.title,
+                gesture_name,
+                bounded_target_index,
+                len(self._steps),
+                self._target_entity_ids,
+            )
+            try:
+                await self._async_apply_index(bounded_target_index, expanded_before)
+            except Exception:
+                self._ignore_state_changes_until = 0.0
+                LOGGER.exception(
+                    "Failed applying direct gesture (entry=%s title=%s gesture=%s target=%s steps=%s)",
+                    self.entry.entry_id,
+                    self.entry.title,
+                    gesture_name,
+                    bounded_target_index,
+                    len(self._steps),
+                )
+                return
+            else:
+                self._resolved_index = bounded_target_index
+                await self._async_reconcile_expanded_targets(
+                    bounded_target_index, expanded_before
+                )
                 self._ignore_state_changes_until = max(
                     self._ignore_state_changes_until,
                     time.monotonic() + 0.5,

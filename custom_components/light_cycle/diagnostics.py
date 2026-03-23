@@ -10,8 +10,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.redact import async_redact_data
 
-from .const import CONF_REMOTE_IEEE, CONF_TARGET_ENTITY_ID, CONF_TARGET_ENTITY_IDS, DOMAIN
-from .settings import get_max_parallel_calls
+from .const import (
+    CONF_DOUBLE_PRESS_BINDING,
+    CONF_LONG_PRESS_BINDING,
+    CONF_REMOTE_IEEE,
+    CONF_TARGET_ENTITY_ID,
+    CONF_TARGET_ENTITY_IDS,
+    DOMAIN,
+)
+from .settings import async_get_device_gesture_support, get_max_parallel_calls
 
 _TO_REDACT = {CONF_REMOTE_IEEE}
 
@@ -42,6 +49,9 @@ async def async_get_config_entry_diagnostics(
     # Snapshot primary target state for quick top-level diagnostics context.
     target_entity_id = target_entity_ids[0] if target_entity_ids else None
     target_state = hass.states.get(target_entity_id) if target_entity_id else None
+    remembered_gesture_support = await async_get_device_gesture_support(
+        hass, entry.options.get(CONF_REMOTE_IEEE, entry.data.get(CONF_REMOTE_IEEE))
+    )
 
     # Pull live controller runtime object if currently loaded.
     controllers: dict[str, Any] = hass.data.get(DOMAIN, {}).get("controllers", {})
@@ -117,6 +127,7 @@ async def async_get_config_entry_diagnostics(
             "color_mode": None if target_state is None else target_state.attributes.get("color_mode"),
             "members": None if target_state is None else target_state.attributes.get("entity_id"),
         },
+        "remembered_device_gesture_support": remembered_gesture_support,
     }
 
     if controller is not None:
@@ -139,10 +150,31 @@ async def async_get_config_entry_diagnostics(
             "sample_counts": getattr(controller, "_last_sample_counts", None),
             "max_parallel_calls": get_max_parallel_calls(hass),
             "temp_range_cache": temp_range_cache,
+            "cycle_signature": getattr(controller, "_cycle_signature", None),
+            "optional_gesture_bindings": getattr(controller, "_gesture_bindings", None),
             "state_sync_suppressed": bool(
                 time.monotonic()
                 < float(getattr(controller, "_ignore_state_changes_until", 0.0))
             ),
         }
+
+    long_press_binding = entry.options.get(
+        CONF_LONG_PRESS_BINDING, entry.data.get(CONF_LONG_PRESS_BINDING)
+    )
+    double_press_binding = entry.options.get(
+        CONF_DOUBLE_PRESS_BINDING, entry.data.get(CONF_DOUBLE_PRESS_BINDING)
+    )
+    data["bindings"] = {
+        "long_press": (
+            async_redact_data(long_press_binding, _TO_REDACT)
+            if isinstance(long_press_binding, dict)
+            else None
+        ),
+        "double_press": (
+            async_redact_data(double_press_binding, _TO_REDACT)
+            if isinstance(double_press_binding, dict)
+            else None
+        ),
+    }
 
     return data

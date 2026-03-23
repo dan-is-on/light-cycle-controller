@@ -21,7 +21,10 @@ from .const import (
     CONF_ARGS,
     CONF_CLUSTER_ID,
     CONF_COMMAND,
+    CONF_DOUBLE_PRESS_BINDING,
     CONF_ENDPOINT_ID,
+    CONF_GESTURE_TARGET_INDEX,
+    CONF_LONG_PRESS_BINDING,
     CONF_MAX_PARALLEL_CALLS,
     CONF_ON_STEPS,
     CONF_REMOTE_DEVICE_ID,
@@ -42,6 +45,8 @@ from .const import (
     DEFAULT_CAPTURE_TIMEOUT_SECONDS,
     DEFAULT_MAX_PARALLEL_CALLS,
     DOMAIN,
+    GESTURE_DOUBLE_PRESS,
+    GESTURE_LONG_PRESS,
     MAX_ON_STEPS,
     MAX_MAX_PARALLEL_CALLS,
     MIN_MAX_PARALLEL_CALLS,
@@ -49,12 +54,120 @@ from .const import (
     STEP_MODE_COLOR,
     STEP_MODE_WHITE_TEMP,
 )
-from .settings import async_get_settings, async_set_max_parallel_calls
+from .settings import (
+    async_get_device_gesture_support,
+    async_get_settings,
+    async_set_device_gesture_support,
+    async_set_max_parallel_calls,
+)
 
 EVENT_ZHA_EVENT = "zha_event"
 CONF_RECAPTURE = "recapture"
+CONF_GESTURE_NOT_SUPPORTED = "gesture_not_supported"
+CONF_RECAPTURE_LONG_PRESS = "recapture_long_press"
+CONF_RECAPTURE_DOUBLE_PRESS = "recapture_double_press"
+CONF_LONG_PRESS_TARGET = "long_press_target"
+CONF_DOUBLE_PRESS_TARGET = "double_press_target"
+CONF_SKIP_CAPTURE = "skip_capture"
+GESTURE_TARGET_NONE = "__none__"
 
 LOGGER = logging.getLogger(__name__)
+
+GESTURE_BINDING_KEYS = {
+    GESTURE_LONG_PRESS: CONF_LONG_PRESS_BINDING,
+    GESTURE_DOUBLE_PRESS: CONF_DOUBLE_PRESS_BINDING,
+}
+
+GESTURE_RECAPTURE_KEYS = {
+    GESTURE_LONG_PRESS: CONF_RECAPTURE_LONG_PRESS,
+    GESTURE_DOUBLE_PRESS: CONF_RECAPTURE_DOUBLE_PRESS,
+}
+
+GESTURE_TARGET_KEYS = {
+    GESTURE_LONG_PRESS: CONF_LONG_PRESS_TARGET,
+    GESTURE_DOUBLE_PRESS: CONF_DOUBLE_PRESS_TARGET,
+}
+
+
+def _gesture_label(gesture: str) -> str:
+    """Return a user-facing label for an optional gesture."""
+    if gesture == GESTURE_DOUBLE_PRESS:
+        return "double press"
+    return "long press"
+
+
+def _signature_to_storage(signature: _ZhaButtonSignature, target_index: int) -> dict[str, Any]:
+    """Serialize a captured optional gesture signature for config entry storage."""
+    return {
+        CONF_ENDPOINT_ID: signature.endpoint_id,
+        CONF_COMMAND: signature.command,
+        CONF_CLUSTER_ID: signature.cluster_id,
+        CONF_ARGS: signature.args,
+        CONF_GESTURE_TARGET_INDEX: target_index,
+    }
+
+
+def _binding_signature_from_storage(
+    ieee: str | None, binding: Any
+) -> _ZhaButtonSignature | None:
+    """Deserialize one stored optional gesture binding to a signature object."""
+    if ieee is None or not isinstance(binding, dict):
+        return None
+
+    endpoint_id = binding.get(CONF_ENDPOINT_ID)
+    command = binding.get(CONF_COMMAND)
+    if endpoint_id is None or command is None:
+        return None
+
+    try:
+        return _ZhaButtonSignature(
+            ieee=ieee,
+            endpoint_id=int(endpoint_id),
+            command=str(command),
+            cluster_id=binding.get(CONF_CLUSTER_ID),
+            args=list(binding.get(CONF_ARGS, []))
+            if binding.get(CONF_ARGS) is not None
+            else None,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _binding_target_index_from_storage(binding: Any, on_steps: int) -> int:
+    """Return a bounded direct-jump target index from a stored binding."""
+    if not isinstance(binding, dict):
+        return 0
+
+    try:
+        target_index = int(binding.get(CONF_GESTURE_TARGET_INDEX, 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(on_steps, target_index))
+
+
+def _step_target_selector(
+    steps: list[dict[str, Any]], *, include_none: bool = False
+) -> selector.SelectSelector:
+    """Build a dropdown that lets users map a gesture to no action, Off, or a step."""
+    options: list[dict[str, str]] = []
+    if include_none:
+        options.append({"value": GESTURE_TARGET_NONE, "label": "Do nothing"})
+    options.append({"value": "0", "label": "Off"})
+    for step_num, step in enumerate(steps, start=1):
+        label = str(step.get(CONF_STEP_LABEL, f"Step {step_num}")).strip() or f"Step {step_num}"
+        options.append(
+            {
+                "value": str(step_num),
+                "label": f"Step {step_num}: {label}",
+            }
+        )
+
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
 
 
 def _step_label_key(step: int) -> str:
@@ -383,7 +496,7 @@ def _build_step_defaults(existing_steps: list[dict[str, Any]], on_steps: int) ->
 class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Light Cycle Controller."""
 
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self) -> None:
         # Step A fields (instance basics).
@@ -405,6 +518,119 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._pending_max_parallel_calls: int | None = None
         self._draft_steps: list[dict[str, Any]] = []
         self._details_step_index: int = 1
+        self._gesture_bindings: dict[str, dict[str, Any]] = {}
+        self._supported_device_gestures: list[str] = []
+        self._selected_gesture_targets: dict[str, int] = {}
+        self._pending_device_gesture_probes: list[str] = []
+        self._current_device_gesture_probe: str | None = None
+        self._enabled_gestures: list[str] = []
+        self._pending_gesture_captures: list[str] = []
+        self._current_gesture_capture: str | None = None
+
+    def _signature_in_use(self, signature: _ZhaButtonSignature) -> bool:
+        """Return whether a captured signature is already assigned in this flow."""
+        if self._signature == signature:
+            return True
+
+        for binding in self._gesture_bindings.values():
+            existing = _binding_signature_from_storage(self._remote_ieee, binding)
+            if existing == signature:
+                return True
+        return False
+
+    async def _async_refresh_device_gesture_support(self) -> dict[str, bool]:
+        """Load remembered gesture-support flags for the selected device."""
+        support = await async_get_device_gesture_support(self.hass, self._remote_ieee)
+        self._supported_device_gestures = [
+            gesture
+            for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
+            if support.get(gesture) is True
+        ]
+        return support
+
+    def _prepare_optional_gesture_capture_queue(self, selected_gestures: list[str]) -> None:
+        """Reset per-entry gesture capture state for the chosen actions."""
+        self._enabled_gestures = list(selected_gestures)
+        self._pending_gesture_captures = list(selected_gestures)
+        self._current_gesture_capture = None
+
+        # Drop any disabled gesture bindings immediately so stale mappings are never saved.
+        self._gesture_bindings = {
+            gesture: binding
+            for gesture, binding in self._gesture_bindings.items()
+            if gesture in self._enabled_gestures
+        }
+        self._selected_gesture_targets = {
+            gesture: target_index
+            for gesture, target_index in self._selected_gesture_targets.items()
+            if gesture in self._enabled_gestures
+        }
+
+    async def _async_next_device_probe_or_capture(self):
+        """Continue probing unknown device gesture support, then capture the main press."""
+        if self._pending_device_gesture_probes:
+            self._current_device_gesture_probe = self._pending_device_gesture_probes.pop(0)
+            return await self.async_step_probe_device_gesture()
+
+        self._current_device_gesture_probe = None
+        await self._async_refresh_device_gesture_support()
+        return await self.async_step_capture()
+
+    async def _async_start_device_support_flow(self):
+        """Probe unknown long/double press support for the selected device once."""
+        support = await self._async_refresh_device_gesture_support()
+        self._pending_device_gesture_probes = [
+            gesture
+            for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
+            if gesture not in support
+        ]
+        return await self._async_next_device_probe_or_capture()
+
+    async def _async_finish_create_entry(self):
+        """Create the config entry with all captured gesture bindings included."""
+        assert self._instance_name is not None
+        assert self._target_entity_ids
+        assert self._remote_device_id is not None
+        assert self._remote_ieee is not None
+        assert self._signature is not None
+
+        target_signature = ",".join(sorted(self._target_entity_ids))
+        unique_id = (
+            f"{self._remote_ieee}:{self._signature.endpoint_id}:{self._signature.command}"
+            f":{target_signature}"
+        )
+        # Unique ID prevents duplicate entries for same remote signature + target set.
+        await self.async_set_unique_id(unique_id)
+        self._abort_if_unique_id_configured()
+
+        data = {
+            CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
+            CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
+            CONF_REMOTE_DEVICE_ID: self._remote_device_id,
+            CONF_REMOTE_IEEE: self._remote_ieee,
+            CONF_ENDPOINT_ID: self._signature.endpoint_id,
+            CONF_COMMAND: self._signature.command,
+            CONF_CLUSTER_ID: self._signature.cluster_id,
+            CONF_ARGS: self._signature.args,
+            CONF_STEPS: self._draft_steps,
+            CONF_LONG_PRESS_BINDING: self._gesture_bindings.get(GESTURE_LONG_PRESS),
+            CONF_DOUBLE_PRESS_BINDING: self._gesture_bindings.get(GESTURE_DOUBLE_PRESS),
+        }
+        if self._pending_max_parallel_calls is not None:
+            # Persist the integration-wide setting from first-entry setup step.
+            await async_set_max_parallel_calls(
+                self.hass, self._pending_max_parallel_calls
+            )
+        return self.async_create_entry(title=self._instance_name, data=data)
+
+    async def _async_next_optional_gesture_step_or_finish(self):
+        """Advance per-entry gesture capture flow or finish the entry."""
+        if self._pending_gesture_captures:
+            self._current_gesture_capture = self._pending_gesture_captures.pop(0)
+            return await self.async_step_capture_optional()
+
+        self._current_gesture_capture = None
+        return await self._async_finish_create_entry()
 
     async def async_step_user(self, user_input: ConfigType | None = None):
         """Step A: capture instance name, targets, and initial global parallelism."""
@@ -489,7 +715,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._remote_device_name = device_entry.name_by_user or device_entry.name
                     self._remote_ieee = ieee
                     self._async_reset_capture()
-                    return await self.async_step_capture()
+                    return await self._async_start_device_support_flow()
 
         schema = vol.Schema(
             {
@@ -499,6 +725,67 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="device", data_schema=schema, errors=errors)
+
+    async def async_step_probe_device_gesture(
+        self, user_input: ConfigType | None = None
+    ):
+        """Probe whether the selected remote exposes one optional gesture in ZHA."""
+        errors: dict[str, str] = {}
+        gesture = self._current_device_gesture_probe
+
+        if self._remote_ieee is None or gesture is None:
+            return await self._async_next_device_probe_or_capture()
+
+        if user_input is not None:
+            if user_input.get(CONF_GESTURE_NOT_SUPPORTED):
+                await async_set_device_gesture_support(
+                    self.hass,
+                    self._remote_ieee,
+                    gesture,
+                    False,
+                )
+                return await self._async_next_device_probe_or_capture()
+
+            try:
+                self._async_reset_capture()
+                self._async_ensure_capture_listener()
+                assert self._capture_future is not None
+                await asyncio.wait_for(
+                    asyncio.shield(self._capture_future),
+                    timeout=DEFAULT_CAPTURE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                errors["base"] = "no_press"
+            except AssertionError:
+                errors["base"] = "invalid_event"
+            else:
+                await async_set_device_gesture_support(
+                    self.hass,
+                    self._remote_ieee,
+                    gesture,
+                    True,
+                )
+                return await self._async_next_device_probe_or_capture()
+            finally:
+                if errors:
+                    self._async_reset_capture()
+
+        return self.async_show_form(
+            step_id="probe_device_gesture",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_GESTURE_NOT_SUPPORTED,
+                        default=False,
+                    ): _boolean_field()
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "gesture": _gesture_label(gesture),
+                "device": self._remote_device_name or (self._remote_ieee or "the device"),
+            },
+        )
 
     @callback
     def _async_reset_capture(self) -> None:
@@ -750,38 +1037,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._details_step_index = step_num + 1
                     return await self.async_step_steps_details()
 
-                assert self._instance_name is not None
-                assert self._target_entity_ids
-                assert self._remote_device_id is not None
-                assert self._remote_ieee is not None
-                assert self._signature is not None
-
-                target_signature = ",".join(sorted(self._target_entity_ids))
-                unique_id = (
-                    f"{self._remote_ieee}:{self._signature.endpoint_id}:{self._signature.command}"
-                    f":{target_signature}"
-                )
-                # Unique ID prevents duplicate entries for same remote signature + target set.
-                await self.async_set_unique_id(unique_id)
-                self._abort_if_unique_id_configured()
-
-                data = {
-                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
-                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
-                    CONF_REMOTE_DEVICE_ID: self._remote_device_id,
-                    CONF_REMOTE_IEEE: self._remote_ieee,
-                    CONF_ENDPOINT_ID: self._signature.endpoint_id,
-                    CONF_COMMAND: self._signature.command,
-                    CONF_CLUSTER_ID: self._signature.cluster_id,
-                    CONF_ARGS: self._signature.args,
-                    CONF_STEPS: self._draft_steps,
-                }
-                if self._pending_max_parallel_calls is not None:
-                    # Persist the integration-wide setting from first-entry setup step.
-                    await async_set_max_parallel_calls(
-                        self.hass, self._pending_max_parallel_calls
-                    )
-                return self.async_create_entry(title=self._instance_name, data=data)
+                return await self.async_step_gestures()
 
         schema_dict: dict[Any, Any] = {}
         if mode == STEP_MODE_WHITE_TEMP:
@@ -826,6 +1082,123 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"step": str(step_num), "on_steps": str(on_steps)},
         )
 
+    async def async_step_gestures(self, user_input: ConfigType | None = None):
+        """Step E: choose what each supported optional gesture should do."""
+        supported_gestures = list(self._supported_device_gestures)
+        if not supported_gestures:
+            return await self._async_finish_create_entry()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            selected_gestures: list[str] = []
+            selected_targets: dict[str, int] = {}
+
+            for gesture in supported_gestures:
+                raw_target = user_input.get(GESTURE_TARGET_KEYS[gesture], GESTURE_TARGET_NONE)
+                if raw_target == GESTURE_TARGET_NONE:
+                    self._gesture_bindings.pop(gesture, None)
+                    continue
+
+                try:
+                    target_index = int(raw_target)
+                except (TypeError, ValueError):
+                    errors[GESTURE_TARGET_KEYS[gesture]] = "invalid_gesture_target"
+                    continue
+
+                selected_gestures.append(gesture)
+                selected_targets[gesture] = max(0, min(len(self._draft_steps), target_index))
+
+            if not errors:
+                self._selected_gesture_targets = selected_targets
+                self._prepare_optional_gesture_capture_queue(selected_gestures)
+                return await self._async_next_optional_gesture_step_or_finish()
+
+        selector_field = _step_target_selector(self._draft_steps, include_none=True)
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    GESTURE_TARGET_KEYS[gesture],
+                    default=(
+                        GESTURE_TARGET_NONE
+                        if gesture not in self._selected_gesture_targets
+                        else str(
+                            max(
+                                0,
+                                min(
+                                    len(self._draft_steps),
+                                    self._selected_gesture_targets[gesture],
+                                ),
+                            )
+                        )
+                    ),
+                ): selector_field
+                for gesture in supported_gestures
+            }
+        )
+        return self.async_show_form(
+            step_id="gestures",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "device": self._remote_device_name or (self._remote_ieee or "the device")
+            },
+        )
+
+    async def async_step_capture_optional(self, user_input: ConfigType | None = None):
+        """Step F: capture one optional long/double gesture for direct-jump actions."""
+        errors: dict[str, str] = {}
+        gesture = self._current_gesture_capture
+
+        if self._remote_ieee is None or gesture is None:
+            return await self._async_next_optional_gesture_step_or_finish()
+
+        if user_input is not None:
+            if user_input.get(CONF_SKIP_CAPTURE):
+                self._gesture_bindings.pop(gesture, None)
+                self._selected_gesture_targets.pop(gesture, None)
+                return await self._async_next_optional_gesture_step_or_finish()
+
+            try:
+                self._async_reset_capture()
+                self._async_ensure_capture_listener()
+                assert self._capture_future is not None
+                data = await asyncio.wait_for(
+                    asyncio.shield(self._capture_future),
+                    timeout=DEFAULT_CAPTURE_TIMEOUT_SECONDS,
+                )
+                signature = _signature_from_zha_event(self._remote_ieee, data)
+                if self._signature_in_use(signature):
+                    errors["base"] = "duplicate_gesture"
+                else:
+                    existing_target = self._selected_gesture_targets.get(gesture, 0)
+                    self._gesture_bindings[gesture] = _signature_to_storage(
+                        signature,
+                        existing_target,
+                    )
+            except asyncio.TimeoutError:
+                errors["base"] = "no_press"
+            except (AssertionError, ValueError):
+                errors["base"] = "invalid_event"
+            finally:
+                if errors:
+                    self._async_reset_capture()
+
+            if not errors:
+                return await self._async_next_optional_gesture_step_or_finish()
+
+        schema = vol.Schema(
+            {vol.Optional(CONF_SKIP_CAPTURE, default=False): _boolean_field()}
+        )
+        return self.async_show_form(
+            step_id="capture_optional",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "gesture": _gesture_label(gesture),
+                "device": self._remote_device_name or (self._remote_ieee or "the device"),
+            },
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
@@ -856,12 +1229,140 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         self._signature: _ZhaButtonSignature | None = None
         self._on_steps: int | None = None
         self._pending_max_parallel_calls: int | None = None
+        self._main_signature_recapture_required: bool = False
 
         self._existing_steps: list[dict[str, Any]] = list(
             _entry_value(config_entry, CONF_STEPS, [])
         )
         self._draft_steps: list[dict[str, Any]] = list(self._existing_steps)
         self._details_step_index: int = 1
+        self._gesture_bindings: dict[str, dict[str, Any]] = {}
+        for gesture, binding_key in GESTURE_BINDING_KEYS.items():
+            binding = _entry_value(config_entry, binding_key, None)
+            if isinstance(binding, dict):
+                self._gesture_bindings[gesture] = dict(binding)
+        self._supported_device_gestures: list[str] = []
+        self._selected_gesture_targets: dict[str, int] = {
+            gesture: _binding_target_index_from_storage(binding, len(self._draft_steps))
+            for gesture, binding in self._gesture_bindings.items()
+        }
+        self._pending_device_gesture_probes: list[str] = []
+        self._current_device_gesture_probe: str | None = None
+        self._enabled_gestures: list[str] = list(self._gesture_bindings)
+        self._pending_gesture_captures: list[str] = []
+        self._current_gesture_capture: str | None = None
+
+    def _signature_in_use(self, signature: _ZhaButtonSignature) -> bool:
+        """Return whether a captured signature is already assigned in this options flow."""
+        if self._signature == signature:
+            return True
+
+        for binding in self._gesture_bindings.values():
+            existing = _binding_signature_from_storage(self._remote_ieee, binding)
+            if existing == signature:
+                return True
+        return False
+
+    async def _async_refresh_device_gesture_support(self) -> dict[str, bool]:
+        """Load remembered gesture-support flags for the selected options-flow device."""
+        support = await async_get_device_gesture_support(self.hass, self._remote_ieee)
+        if self._remote_ieee is not None:
+            for gesture in self._gesture_bindings:
+                if support.get(gesture) is True:
+                    continue
+                support = await async_set_device_gesture_support(
+                    self.hass,
+                    self._remote_ieee,
+                    gesture,
+                    True,
+                )
+        self._supported_device_gestures = [
+            gesture
+            for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
+            if support.get(gesture) is True
+        ]
+        return support
+
+    def _prepare_optional_gesture_capture_queue(
+        self, selected_gestures: list[str], recapture_gestures: list[str]
+    ) -> None:
+        """Apply enabled gesture list and queue only the gestures that need capture."""
+        self._enabled_gestures = list(selected_gestures)
+        self._pending_gesture_captures = list(recapture_gestures)
+        self._current_gesture_capture = None
+        self._gesture_bindings = {
+            gesture: binding
+            for gesture, binding in self._gesture_bindings.items()
+            if gesture in self._enabled_gestures
+        }
+        self._selected_gesture_targets = {
+            gesture: target_index
+            for gesture, target_index in self._selected_gesture_targets.items()
+            if gesture in self._enabled_gestures
+        }
+
+    async def _async_next_device_probe_or_continue(self):
+        """Continue probing support for the selected device, then resume options flow."""
+        if self._pending_device_gesture_probes:
+            self._current_device_gesture_probe = self._pending_device_gesture_probes.pop(0)
+            return await self.async_step_probe_device_gesture()
+
+        self._current_device_gesture_probe = None
+        await self._async_refresh_device_gesture_support()
+        if self._main_signature_recapture_required:
+            return await self.async_step_capture()
+        return await self.async_step_steps()
+
+    async def _async_start_device_support_flow(self):
+        """Probe unknown long/double press support for the selected options-flow device."""
+        support = await self._async_refresh_device_gesture_support()
+        self._pending_device_gesture_probes = [
+            gesture
+            for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
+            if gesture not in support
+        ]
+        return await self._async_next_device_probe_or_continue()
+
+    async def _async_finish_options_entry(self):
+        """Persist edited controller options including optional gesture bindings."""
+        assert self._remote_ieee is not None
+        assert self._signature is not None
+
+        options = {
+            CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
+            CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
+            CONF_REMOTE_DEVICE_ID: self._remote_device_id,
+            CONF_REMOTE_IEEE: self._remote_ieee,
+            CONF_ENDPOINT_ID: self._signature.endpoint_id,
+            CONF_COMMAND: self._signature.command,
+            CONF_CLUSTER_ID: self._signature.cluster_id,
+            CONF_ARGS: self._signature.args,
+            CONF_STEPS: self._draft_steps,
+            CONF_LONG_PRESS_BINDING: self._gesture_bindings.get(GESTURE_LONG_PRESS),
+            CONF_DOUBLE_PRESS_BINDING: self._gesture_bindings.get(GESTURE_DOUBLE_PRESS),
+        }
+        if self._pending_max_parallel_calls is not None:
+            # Save integration-wide parallelism when changed from options flow.
+            await async_set_max_parallel_calls(
+                self.hass, self._pending_max_parallel_calls
+            )
+        LOGGER.info(
+            "Saving options for entry %s: steps=%s brightness=%s gestures=%s",
+            self._config_entry.entry_id,
+            len(self._draft_steps),
+            [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._draft_steps],
+            sorted(self._gesture_bindings),
+        )
+        return self.async_create_entry(title="", data=options)
+
+    async def _async_next_optional_gesture_step_or_finish(self):
+        """Advance options gesture capture flow or save the edited entry."""
+        if self._pending_gesture_captures:
+            self._current_gesture_capture = self._pending_gesture_captures.pop(0)
+            return await self.async_step_capture_optional()
+
+        self._current_gesture_capture = None
+        return await self._async_finish_options_entry()
 
     async def async_step_init(self, user_input: ConfigType | None = None):
         """Options step A: edit targets, remote, step-count, and global parallelism."""
@@ -913,7 +1414,8 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     recapture,
                     max_parallel_calls,
                 )
-                if remote_device_id != self._remote_device_id:
+                device_changed = remote_device_id != self._remote_device_id
+                if device_changed:
                     # Device change always requires a fresh button capture.
                     recapture = True
 
@@ -937,17 +1439,26 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                         self._pending_max_parallel_calls = max_parallel_calls
                         self._draft_steps = _build_step_defaults(self._existing_steps, on_steps)
                         self._details_step_index = 1
+                        self._main_signature_recapture_required = False
+
+                        if device_changed:
+                            # Extra gesture captures belong to the old remote and must not
+                            # be reused after switching devices.
+                            self._gesture_bindings = {}
+                            self._selected_gesture_targets = {}
 
                         if recapture:
                             # Clear prior capture and proceed to capture page.
                             self._signature = None
-                            return await self.async_step_capture()
+                            self._main_signature_recapture_required = True
+                            return await self._async_start_device_support_flow()
 
                         endpoint_id = _entry_value(self._config_entry, CONF_ENDPOINT_ID)
                         command = _entry_value(self._config_entry, CONF_COMMAND)
                         if endpoint_id is None or command is None:
                             # Missing historical signature means we must capture again.
-                            return await self.async_step_capture()
+                            self._main_signature_recapture_required = True
+                            return await self._async_start_device_support_flow()
 
                         self._signature = _ZhaButtonSignature(
                             ieee=ieee,
@@ -956,7 +1467,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                             cluster_id=_entry_value(self._config_entry, CONF_CLUSTER_ID),
                             args=_entry_value(self._config_entry, CONF_ARGS),
                         )
-                        return await self.async_step_steps()
+                        return await self._async_start_device_support_flow()
 
         target_key = (
             vol.Required(CONF_TARGET_ENTITY_IDS, default=self._target_entity_ids)
@@ -998,6 +1509,75 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             errors=errors,
             description_placeholders={
                 "default_max_parallel_calls": str(default_max_parallel_calls)
+            },
+        )
+
+    async def async_step_probe_device_gesture(
+        self, user_input: ConfigType | None = None
+    ):
+        """Probe whether the selected options-flow device exposes one gesture in ZHA."""
+        errors: dict[str, str] = {}
+        gesture = self._current_device_gesture_probe
+
+        if self._remote_ieee is None or gesture is None:
+            return await self._async_next_device_probe_or_continue()
+
+        if user_input is not None:
+            if user_input.get(CONF_GESTURE_NOT_SUPPORTED):
+                await async_set_device_gesture_support(
+                    self.hass,
+                    self._remote_ieee,
+                    gesture,
+                    False,
+                )
+                return await self._async_next_device_probe_or_continue()
+
+            future: asyncio.Future[dict[str, Any]] = self.hass.loop.create_future()
+
+            @callback
+            def _handle_event(event: Event) -> None:
+                if self._remote_ieee is None:
+                    return
+                data = event.data
+                if data.get("device_ieee") != self._remote_ieee:
+                    return
+                if not future.done():
+                    future.set_result(data)
+
+            unsub = self.hass.bus.async_listen(EVENT_ZHA_EVENT, _handle_event)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=DEFAULT_CAPTURE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                errors["base"] = "no_press"
+            finally:
+                unsub()
+
+            if not errors:
+                await async_set_device_gesture_support(
+                    self.hass,
+                    self._remote_ieee,
+                    gesture,
+                    True,
+                )
+                return await self._async_next_device_probe_or_continue()
+
+        return self.async_show_form(
+            step_id="probe_device_gesture",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_GESTURE_NOT_SUPPORTED,
+                        default=False,
+                    ): _boolean_field()
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "gesture": _gesture_label(gesture),
+                "device": self._remote_device_name or (self._remote_ieee or "the device"),
             },
         )
 
@@ -1182,32 +1762,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     self._details_step_index = step_num + 1
                     return await self.async_step_steps_details()
 
-                assert self._remote_ieee is not None
-                assert self._signature is not None
-
-                options = {
-                    CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
-                    CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
-                    CONF_REMOTE_DEVICE_ID: self._remote_device_id,
-                    CONF_REMOTE_IEEE: self._remote_ieee,
-                    CONF_ENDPOINT_ID: self._signature.endpoint_id,
-                    CONF_COMMAND: self._signature.command,
-                    CONF_CLUSTER_ID: self._signature.cluster_id,
-                    CONF_ARGS: self._signature.args,
-                    CONF_STEPS: self._draft_steps,
-                }
-                if self._pending_max_parallel_calls is not None:
-                    # Save integration-wide parallelism when changed from options flow.
-                    await async_set_max_parallel_calls(
-                        self.hass, self._pending_max_parallel_calls
-                    )
-                LOGGER.info(
-                    "Saving options for entry %s: steps=%s brightness=%s",
-                    self._config_entry.entry_id,
-                    len(self._draft_steps),
-                    [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._draft_steps],
-                )
-                return self.async_create_entry(title="", data=options)
+                return await self.async_step_gestures()
 
         schema_dict: dict[Any, Any] = {}
         if mode == STEP_MODE_WHITE_TEMP:
@@ -1250,4 +1805,154 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             data_schema=vol.Schema(schema_dict),
             errors=errors,
             description_placeholders={"step": str(step_num), "on_steps": str(on_steps)},
+        )
+
+    async def async_step_gestures(self, user_input: ConfigType | None = None):
+        """Options step E: choose what each supported gesture should do."""
+        supported_gestures = list(self._supported_device_gestures)
+        if not supported_gestures:
+            return await self._async_finish_options_entry()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            selected_gestures: list[str] = []
+            recapture_gestures: list[str] = []
+            selected_targets: dict[str, int] = {}
+
+            for gesture in supported_gestures:
+                raw_target = user_input.get(GESTURE_TARGET_KEYS[gesture], GESTURE_TARGET_NONE)
+                if raw_target == GESTURE_TARGET_NONE:
+                    self._gesture_bindings.pop(gesture, None)
+                    self._selected_gesture_targets.pop(gesture, None)
+                    continue
+
+                try:
+                    target_index = int(raw_target)
+                except (TypeError, ValueError):
+                    errors[GESTURE_TARGET_KEYS[gesture]] = "invalid_gesture_target"
+                    continue
+
+                selected_gestures.append(gesture)
+                selected_targets[gesture] = max(0, min(len(self._draft_steps), target_index))
+                binding = self._gesture_bindings.get(gesture)
+                if binding is None or user_input.get(GESTURE_RECAPTURE_KEYS[gesture]):
+                    recapture_gestures.append(gesture)
+
+            if not errors:
+                self._selected_gesture_targets = selected_targets
+                self._prepare_optional_gesture_capture_queue(
+                    selected_gestures, recapture_gestures
+                )
+
+                for gesture in selected_gestures:
+                    if gesture in recapture_gestures:
+                        continue
+                    binding = dict(self._gesture_bindings.get(gesture, {}))
+                    binding[CONF_GESTURE_TARGET_INDEX] = self._selected_gesture_targets[gesture]
+                    self._gesture_bindings[gesture] = binding
+
+                return await self._async_next_optional_gesture_step_or_finish()
+
+        selector_field = _step_target_selector(self._draft_steps, include_none=True)
+        schema = vol.Schema(
+            {
+                **{
+                    vol.Required(
+                        GESTURE_TARGET_KEYS[gesture],
+                        default=(
+                            GESTURE_TARGET_NONE
+                            if gesture not in self._selected_gesture_targets
+                            else str(
+                                max(
+                                    0,
+                                    min(
+                                        len(self._draft_steps),
+                                        self._selected_gesture_targets[gesture],
+                                    ),
+                                )
+                            )
+                        ),
+                    ): selector_field
+                    for gesture in supported_gestures
+                },
+                **{
+                    vol.Optional(
+                        GESTURE_RECAPTURE_KEYS[gesture],
+                        default=False,
+                    ): _boolean_field()
+                    for gesture in supported_gestures
+                },
+            }
+        )
+        return self.async_show_form(
+            step_id="gestures",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "device": self._remote_device_name or (self._remote_ieee or "the device")
+            },
+        )
+
+    async def async_step_capture_optional(self, user_input: ConfigType | None = None):
+        """Options step F: capture one optional long/double gesture."""
+        errors: dict[str, str] = {}
+        gesture = self._current_gesture_capture
+
+        if self._remote_ieee is None or gesture is None:
+            return await self._async_next_optional_gesture_step_or_finish()
+
+        if user_input is not None:
+            if user_input.get(CONF_SKIP_CAPTURE):
+                self._gesture_bindings.pop(gesture, None)
+                self._selected_gesture_targets.pop(gesture, None)
+                return await self._async_next_optional_gesture_step_or_finish()
+
+            future: asyncio.Future[dict[str, Any]] = self.hass.loop.create_future()
+
+            @callback
+            def _handle_event(event: Event) -> None:
+                if self._remote_ieee is None:
+                    return
+                data = event.data
+                if data.get("device_ieee") != self._remote_ieee:
+                    return
+                if not future.done():
+                    future.set_result(data)
+
+            unsub = self.hass.bus.async_listen(EVENT_ZHA_EVENT, _handle_event)
+            try:
+                data = await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=DEFAULT_CAPTURE_TIMEOUT_SECONDS,
+                )
+                signature = _signature_from_zha_event(self._remote_ieee, data)
+                if self._signature_in_use(signature):
+                    errors["base"] = "duplicate_gesture"
+                else:
+                    existing_target = self._selected_gesture_targets.get(gesture, 0)
+                    self._gesture_bindings[gesture] = _signature_to_storage(
+                        signature,
+                        existing_target,
+                    )
+            except asyncio.TimeoutError:
+                errors["base"] = "no_press"
+            except ValueError:
+                errors["base"] = "invalid_event"
+            finally:
+                unsub()
+
+            if not errors:
+                return await self._async_next_optional_gesture_step_or_finish()
+
+        schema = vol.Schema(
+            {vol.Optional(CONF_SKIP_CAPTURE, default=False): _boolean_field()}
+        )
+        return self.async_show_form(
+            step_id="capture_optional",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "gesture": _gesture_label(gesture),
+                "device": self._remote_device_name or (self._remote_ieee or "the device"),
+            },
         )

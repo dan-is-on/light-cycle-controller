@@ -23,6 +23,29 @@
         "description": "Click Submit, then press the desired physical button on {device}.",
         "data": {}
       },
+      "gestures": {
+        "title": "Gesture actions",
+        "description": "This remote supports extra gestures. Choose what each supported gesture should do for this controller. Select Do nothing to ignore a gesture for this entry.",
+        "data": {
+          "long_press_target": "Long press action",
+          "double_press_target": "Double press action"
+        }
+      },
+      "capture_optional": {
+        "title": "Capture gesture action",
+        "description": "Click Submit, then perform the {gesture} on {device}. Turn on Skip if you do not want to use this gesture for this entry.",
+        "data": {
+          "skip_capture": "Skip this gesture for this entry"
+        }
+      },
+      "gesture_targets": {
+        "title": "Map optional gestures",
+        "description": "Choose which step each captured gesture should jump to. Off is always available.",
+        "data": {
+          "long_press_target": "Long press target",
+          "double_press_target": "Double press target"
+        }
+      },
       "steps_count": {
         "title": "Brightness steps",
         "description": "Off is always included as the first step. Choose how many \"On\" steps you want.",
@@ -89,6 +112,13 @@
           "step_8_color_rgb": "Step 8 color",
           "step_8_color_hex": "Step 8 color (hex)"
         }
+      },
+      "probe_device_gesture": {
+        "title": "Check gesture support",
+        "description": "Click Submit, then try a {gesture} on {device}. If this remote does not support that gesture, turn on the checkbox and submit to continue.",
+        "data": {
+          "gesture_not_supported": "This remote does not support this gesture"
+        }
       }
     },
     "error": {
@@ -102,7 +132,9 @@
       "label_required": "Label is required.",
       "name_required": "Instance name is required.",
       "invalid_temp_pct": "Temperature must be between 0 and 100.",
-      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex)."
+      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex).",
+      "duplicate_gesture": "That gesture matches a button event already used by this controller. Capture a different gesture or skip it.",
+      "invalid_gesture_target": "Choose Do nothing, Off, or one of the configured steps."
     },
     "abort": {
       "already_configured": "This controller is already configured."
@@ -125,6 +157,31 @@
         "title": "Capture button press",
         "description": "Click Submit, then press the desired physical button on {device}.",
         "data": {}
+      },
+      "gestures": {
+        "title": "Gesture actions",
+        "description": "Choose what each supported gesture should do for this controller. Select Do nothing to ignore a gesture, or enable recapture to bind that gesture again for this entry.",
+        "data": {
+          "long_press_target": "Long press action",
+          "recapture_long_press": "Recapture long press",
+          "double_press_target": "Double press action",
+          "recapture_double_press": "Recapture double press"
+        }
+      },
+      "capture_optional": {
+        "title": "Capture gesture action",
+        "description": "Click Submit, then perform the {gesture} on {device}. Turn on Skip if you do not want to use this gesture for this entry.",
+        "data": {
+          "skip_capture": "Skip this gesture for this entry"
+        }
+      },
+      "gesture_targets": {
+        "title": "Map optional gestures",
+        "description": "Choose which step each captured gesture should jump to. Off is always available.",
+        "data": {
+          "long_press_target": "Long press target",
+          "double_press_target": "Double press target"
+        }
       },
       "steps": {
         "title": "Configure steps",
@@ -185,6 +242,13 @@
           "step_8_color_rgb": "Step 8 color",
           "step_8_color_hex": "Step 8 color (hex)"
         }
+      },
+      "probe_device_gesture": {
+        "title": "Check gesture support",
+        "description": "Click Submit, then try a {gesture} on {device}. If this remote does not support that gesture, turn on the checkbox and submit to continue.",
+        "data": {
+          "gesture_not_supported": "This remote does not support this gesture"
+        }
       }
     },
     "error": {
@@ -197,7 +261,9 @@
       "target_required": "Select at least one target light.",
       "label_required": "Label is required.",
       "invalid_temp_pct": "Temperature must be between 0 and 100.",
-      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex)."
+      "invalid_color": "Enter a valid color (picker value or #RRGGBB hex).",
+      "duplicate_gesture": "That gesture matches a button event already used by this controller. Capture a different gesture or skip it.",
+      "invalid_gesture_target": "Choose Do nothing, Off, or one of the configured steps."
     }
   }
 }

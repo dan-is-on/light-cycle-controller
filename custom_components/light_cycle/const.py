@@ -17,6 +17,15 @@ CONF_COMMAND = "command"
 CONF_CLUSTER_ID = "cluster_id"
 CONF_ARGS = "args"
 
+# Optional direct-jump gesture bindings.
+CONF_LONG_PRESS_BINDING = "long_press_binding"
+CONF_DOUBLE_PRESS_BINDING = "double_press_binding"
+CONF_GESTURE_TARGET_INDEX = "target_index"
+
+# Supported optional gesture names.
+GESTURE_LONG_PRESS = "long_press"
+GESTURE_DOUBLE_PRESS = "double_press"
+
 # Step configuration fields.
 CONF_ON_STEPS = "on_steps"
 CONF_STEPS = "steps"

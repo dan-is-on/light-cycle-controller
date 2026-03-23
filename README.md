@@ -14,8 +14,10 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
   - Target light collection (single lights and/or light groups exposed as `light`)
   - ZHA remote device + captured button signature from an actual press (`zha_event`)
   - Dynamic brightness steps: Off + N “On” steps (each step has a label + brightness %)
+  - Optional long press / double press bindings that jump directly to Off or a chosen step
 - **Runtime behaviour:**
   - Matching press advances to the next step
+  - Optional long press / double press can jump straight to Off or a specific step
   - External light changes reconcile internal cycle position (nearest brightness step wins)
   - Multiple instances supported without collisions
 
@@ -29,25 +31,39 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
      - If you see intermittent failures or lag (especially Tuya throttling), reduce this value
 2. **Select Zigbee remote (ZHA)**
    - Pick the ZHA device (button/remote)
-3. **Capture button press**
+3. **Check gesture support (first time per remote)**
+   - If this remote has never been checked before, the wizard asks you to try a **Long press** and then a **Double press**
+   - Support is remembered per remote, so later entries on the same device skip these checks
+   - If a gesture is not supported, mark it as unsupported and continue
+4. **Capture button press**
    - Click **Submit**, then press the desired physical button once
    - Integration stores a “signature” (device IEEE + endpoint + command; optionally cluster/args if needed)
-4. **Configure step basics**
+5. **Configure step basics**
    - Choose number of “On” steps (1–8)
    - For each step: label + brightness % + mode (**White & temperature** or **Colour**)
-5. **Configure step details**
+6. **Configure step details**
    - Mode-specific details are then shown **one step at a time** (clear visual separation):
      - White & temperature: only temperature slider (0–100% of each light’s min/max Kelvin range)
      - Colour: only colour picker + `#RRGGBB` hex
    - Off is always included as the first state
+7. **Gesture actions**
+   - For any gestures the remote is known to support, choose what each one should do:
+     - **Do nothing**
+     - jump to **Off**
+     - jump to any configured step
+   - If you choose an action for long press or double press, the wizard then captures that gesture for the selected button on this entry
 
 ## How cycling + sync works
 
 - **Cycle order:** Off → Step 1 → Step 2 → … → Off
 - **On press:** integration classifies the *current* light state, then advances one step and calls:
   - `light.turn_off` for Off
-  - `light.turn_on` with both `brightness` (percent → 0–255) and `brightness_pct` for On steps
-  - Service dispatch prioritizes non-Tuya entities first and defers Tuya-backed entities, so local lights tend to respond sooner in mixed collections
+  - `light.turn_on` with per-entity payloads (brightness plus colour or white-temperature when configured)
+- **Optional gesture shortcuts:**
+  - Long press and double press support is learned once per remote and remembered in integration storage
+  - For supported gestures, each entry can map long press / double press to **Do nothing**, `Off`, or any On step
+  - If a gesture is mapped for an entry, the integration captures that gesture from the chosen button before saving
+- **Dispatch behaviour:** service dispatch prioritizes non-Tuya entities first and defers Tuya-backed entities, so local lights tend to respond sooner in mixed collections
 - **Sync rules (deterministic):**
   - Light turns Off → cycle state becomes Off
   - Light becomes `unavailable` → treated as Off for cycling
@@ -62,9 +78,8 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
 
 ## Explicit non-goals (deferred)
 
-- Double press / long press
 - Zigbee2MQTT support (ZHA only for v1)
-- Per-step colour temperature / colour (brightness-only for v1)
+- Triple press / arbitrary multi-gesture automation logic
 - Auto-creating HA helpers/scenes/automations as persistent artefacts
 
 ## Why we don’t create helpers/scenes/automations (v1)
@@ -105,7 +120,7 @@ Yes — when HACS updates a custom integration’s Python code, Home Assistant n
 
 ## Editing an existing controller
 
-After setup, you can edit an entry (target light, ZHA device/button capture, and steps):
+After setup, you can edit an entry (target lights, ZHA device/button capture, optional gesture bindings, and steps):
 
 1. Settings → Devices & Services → “Light Cycle Controller”
 2. Open the entry’s menu (⋮) → **Configure**
@@ -149,6 +164,7 @@ Enable debug logging to see per-press logs:
    - `Started controller ... (steps=...)`
    - `Refreshed steps ...`
    - `Press: ... steps=...`
+   - `Direct gesture: ... gesture=long_press target=...`
 4. In Logs, use **⋮ → Show raw logs** to see INFO/DEBUG output (the condensed view is warnings/errors only).
 
 #### Persistent logger config (`configuration.yaml`)

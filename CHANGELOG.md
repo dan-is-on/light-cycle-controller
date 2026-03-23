@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.19
+
+- Learn long-press and double-press support once per ZHA remote, cache that capability in integration settings, and skip repeating those support-check screens on later entries for the same device.
+- Change the wizard so supported gestures always get an explicit action choice (`Do nothing`, `Off`, or a direct jump to a configured step), instead of first asking whether to enable them.
+- Keep per-entry gesture capture only for the supported gestures you actually map, and include remembered device gesture support in diagnostics.
+
+## 0.1.18
+
+- Add optional long-press and double-press capture to the config flow and options flow, with each captured gesture mappable to `Off` or any configured step.
+- React to those optional gesture bindings at runtime, so long/double press can jump directly to a target step instead of advancing the normal cycle.
+- Add config-entry migration to v3 plus richer dump/diagnostics output for optional gesture bindings, making gesture debugging much easier.
+
 ## 0.1.17
 
 - Fix duplicate-brightness step progression by using the last resolved step as a tie-breaker during brightness classification; this prevents getting stuck on the same colour step when multiple steps share the same brightness.

@@ -12,7 +12,7 @@ import voluptuous as vol
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import CONF_DEVICE_ID, CONF_NAME
-from homeassistant.core import Event, callback
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 from homeassistant.helpers.typing import ConfigType
@@ -87,6 +87,17 @@ GESTURE_TARGET_KEYS = {
     GESTURE_LONG_PRESS: CONF_LONG_PRESS_TARGET,
     GESTURE_DOUBLE_PRESS: CONF_DOUBLE_PRESS_TARGET,
 }
+
+REMOTE_TRIGGER_HINTS = (
+    "button",
+    "press",
+    "hold",
+    "rotate",
+    "dial",
+    "toggle",
+    "dim",
+    "scene",
+)
 
 
 def _gesture_label(gesture: str) -> str:
@@ -334,6 +345,193 @@ def _entry_value(entry: ConfigEntry, key: str, default: Any | None = None) -> An
     return entry.data.get(key, default)
 
 
+def _device_option_label(device_entry: dr.DeviceEntry) -> str:
+    """Build a readable label for one candidate remote device."""
+    name = device_entry.name_by_user or device_entry.name or device_entry.model or device_entry.id
+    detail_parts = [
+        part
+        for part in (device_entry.manufacturer, device_entry.model)
+        if isinstance(part, str) and part.strip()
+    ]
+    if not detail_parts:
+        return str(name)
+
+    detail = " / ".join(dict.fromkeys(detail_parts))
+    if detail.lower() in str(name).lower():
+        return str(name)
+    return f"{name} ({detail})"
+
+
+def _looks_like_remote_trigger(trigger: dict[str, Any]) -> bool:
+    """Heuristically identify ZHA remote/button triggers from device automations."""
+    if str(trigger.get("domain", "")).lower() != "zha":
+        return False
+
+    for key in ("type", "subtype"):
+        value = trigger.get(key)
+        if not isinstance(value, str):
+            continue
+        lowered = value.lower()
+        if any(hint in lowered for hint in REMOTE_TRIGGER_HINTS):
+            return True
+
+    return False
+
+
+async def _async_zha_remote_selector(
+    hass: HomeAssistant, selected_device_id: str | None = None
+) -> selector.SelectSelector | selector.DeviceSelector:
+    """Return a filtered selector of likely ZHA remotes/buttons.
+
+    We prefer a pre-filtered dropdown backed by device automations so users do not
+    need to sift through every Zigbee device in the house. If device automation
+    inspection is unavailable for any reason, fall back to the generic ZHA device
+    selector so setup still works.
+    """
+    try:
+        from homeassistant.components.device_automation import (
+            DeviceAutomationType,
+            async_get_device_automations,
+        )
+    except ImportError:
+        LOGGER.debug(
+            "Device automation helpers unavailable; falling back to generic ZHA device selector"
+        )
+        return selector.DeviceSelector(
+            selector.DeviceSelectorConfig(integration="zha")
+        )
+
+    device_registry = dr.async_get(hass)
+    zha_devices = [
+        device_entry
+        for device_entry in device_registry.devices.values()
+        if _zha_ieee_from_device_entry(device_entry)
+    ]
+    if not zha_devices:
+        return selector.DeviceSelector(
+            selector.DeviceSelectorConfig(integration="zha")
+        )
+
+    device_ids = [device_entry.id for device_entry in zha_devices]
+    try:
+        triggers_by_device = await async_get_device_automations(
+            hass,
+            DeviceAutomationType.TRIGGER,
+            device_ids,
+        )
+    except Exception as err:
+        LOGGER.debug(
+            "Unable to inspect ZHA device automations for remote filtering; falling back to generic selector: %s",
+            err,
+        )
+        return selector.DeviceSelector(
+            selector.DeviceSelectorConfig(integration="zha")
+        )
+
+    options: list[dict[str, str]] = []
+    included_ids: set[str] = set()
+    for device_entry in zha_devices:
+        device_id = device_entry.id
+        triggers = triggers_by_device.get(device_id, [])
+        if not any(_looks_like_remote_trigger(trigger) for trigger in triggers):
+            continue
+
+        options.append(
+            {
+                "value": device_id,
+                "label": _device_option_label(device_entry),
+            }
+        )
+        included_ids.add(device_id)
+
+    if (
+        selected_device_id
+        and selected_device_id not in included_ids
+        and (selected_device := device_registry.async_get(selected_device_id)) is not None
+        and _zha_ieee_from_device_entry(selected_device)
+    ):
+        options.append(
+            {
+                "value": selected_device_id,
+                "label": _device_option_label(selected_device),
+            }
+        )
+
+    if not options:
+        return selector.DeviceSelector(
+            selector.DeviceSelectorConfig(integration="zha")
+        )
+
+    options.sort(key=lambda option: option["label"].casefold())
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _infer_device_gesture_support_from_entries(
+    hass: HomeAssistant, ieee: str | None
+) -> dict[str, bool]:
+    """Infer supported gestures from existing entries already using the remote.
+
+    We only infer positive support here. If another entry on the same remote already
+    has a long-press or double-press binding captured, we can safely skip the
+    capability-probe pages for later entries and edits on that device.
+    """
+    if not ieee:
+        return {}
+
+    inferred: dict[str, bool] = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if _entry_value(entry, CONF_REMOTE_IEEE) != ieee:
+            continue
+
+        for gesture, binding_key in GESTURE_BINDING_KEYS.items():
+            if inferred.get(gesture) is True:
+                continue
+
+            binding = _entry_value(entry, binding_key, None)
+            if _binding_signature_from_storage(ieee, binding) is not None:
+                inferred[gesture] = True
+
+    return inferred
+
+
+async def _async_load_known_device_gesture_support(
+    hass: HomeAssistant,
+    ieee: str | None,
+    *,
+    extra_supported_gestures: tuple[str, ...] = (),
+) -> dict[str, bool]:
+    """Return remembered gesture support, backfilling from existing entry data.
+
+    Support is primarily persisted in the integration settings store, but we also
+    reconstruct missing positive support from existing config entries so users are
+    not forced through duplicate long/double capability checks while editing.
+    """
+    support = await async_get_device_gesture_support(hass, ieee)
+    if not ieee:
+        return support
+
+    inferred = _infer_device_gesture_support_from_entries(hass, ieee)
+    for gesture in extra_supported_gestures:
+        if gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS):
+            inferred[gesture] = True
+
+    merged = dict(support)
+    for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS):
+        if inferred.get(gesture) is not True:
+            continue
+        merged[gesture] = True
+        if support.get(gesture) is True:
+            continue
+        support = await async_set_device_gesture_support(hass, ieee, gesture, True)
+
+    return merged
+
+
 def _normalize_target_entity_ids(value: Any) -> list[str]:
     """Normalize selector output to a de-duplicated list of light entity IDs."""
     values: list[Any]
@@ -540,7 +738,9 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_refresh_device_gesture_support(self) -> dict[str, bool]:
         """Load remembered gesture-support flags for the selected device."""
-        support = await async_get_device_gesture_support(self.hass, self._remote_ieee)
+        support = await _async_load_known_device_gesture_support(
+            self.hass, self._remote_ieee
+        )
         self._supported_device_gestures = [
             gesture
             for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
@@ -717,11 +917,10 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._async_reset_capture()
                     return await self._async_start_device_support_flow()
 
+        device_selector = await _async_zha_remote_selector(self.hass)
         schema = vol.Schema(
             {
-                vol.Required(CONF_DEVICE_ID): selector.DeviceSelector(
-                    selector.DeviceSelectorConfig(integration="zha")
-                )
+                vol.Required(CONF_DEVICE_ID): device_selector
             }
         )
         return self.async_show_form(step_id="device", data_schema=schema, errors=errors)
@@ -1218,6 +1417,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         self._config_entry = config_entry
 
         # Seed editable values from existing entry/options.
+        self._instance_name: str = config_entry.title
         self._target_entity_ids: list[str] = _entry_target_entity_ids(config_entry)
         self._remote_device_id: str | None = _entry_value(
             config_entry, CONF_REMOTE_DEVICE_ID, None
@@ -1265,17 +1465,11 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
 
     async def _async_refresh_device_gesture_support(self) -> dict[str, bool]:
         """Load remembered gesture-support flags for the selected options-flow device."""
-        support = await async_get_device_gesture_support(self.hass, self._remote_ieee)
-        if self._remote_ieee is not None:
-            for gesture in self._gesture_bindings:
-                if support.get(gesture) is True:
-                    continue
-                support = await async_set_device_gesture_support(
-                    self.hass,
-                    self._remote_ieee,
-                    gesture,
-                    True,
-                )
+        support = await _async_load_known_device_gesture_support(
+            self.hass,
+            self._remote_ieee,
+            extra_supported_gestures=tuple(self._gesture_bindings),
+        )
         self._supported_device_gestures = [
             gesture
             for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
@@ -1328,6 +1522,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         assert self._remote_ieee is not None
         assert self._signature is not None
 
+        updated_title = self._instance_name.strip()
         options = {
             CONF_TARGET_ENTITY_IDS: self._target_entity_ids,
             CONF_TARGET_ENTITY_ID: self._target_entity_ids[0],
@@ -1346,9 +1541,16 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             await async_set_max_parallel_calls(
                 self.hass, self._pending_max_parallel_calls
             )
+        if updated_title != self._config_entry.title:
+            # Keep the config-entry title aligned with the user-editable instance name.
+            self.hass.config_entries.async_update_entry(
+                self._config_entry,
+                title=updated_title,
+            )
         LOGGER.info(
-            "Saving options for entry %s: steps=%s brightness=%s gestures=%s",
+            "Saving options for entry %s: title=%s steps=%s brightness=%s gestures=%s",
             self._config_entry.entry_id,
+            updated_title,
             len(self._draft_steps),
             [s.get(CONF_STEP_BRIGHTNESS_PCT) for s in self._draft_steps],
             sorted(self._gesture_bindings),
@@ -1374,6 +1576,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
 
         if user_input is not None:
             # Parse and validate all editable options from the first options page.
+            name = str(user_input.get(CONF_NAME, "")).strip()
             target_entity_ids = _normalize_target_entity_ids(
                 user_input.get(CONF_TARGET_ENTITY_IDS)
             )
@@ -1391,6 +1594,9 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                     <= MAX_MAX_PARALLEL_CALLS
                 ):
                     errors[CONF_MAX_PARALLEL_CALLS] = "invalid_max_parallel_calls"
+
+            if not name:
+                errors[CONF_NAME] = "name_required"
 
             try:
                 on_steps = int(user_input[CONF_ON_STEPS])
@@ -1434,6 +1640,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                         self._remote_device_name = (
                             device_entry.name_by_user or device_entry.name
                         )
+                        self._instance_name = name
                         self._remote_ieee = ieee
                         self._on_steps = on_steps
                         self._pending_max_parallel_calls = max_parallel_calls
@@ -1480,12 +1687,14 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             else vol.Required(CONF_REMOTE_DEVICE_ID)
         )
 
+        remote_selector = await _async_zha_remote_selector(
+            self.hass, self._remote_device_id
+        )
         schema = vol.Schema(
             {
+                vol.Required(CONF_NAME, default=self._instance_name): selector.TextSelector(),
                 target_key: _light_entity_selector(multiple=True),
-                device_key: selector.DeviceSelector(
-                    selector.DeviceSelectorConfig(integration="zha")
-                ),
+                device_key: remote_selector,
                 vol.Optional(CONF_RECAPTURE, default=False): _boolean_field(),
                 vol.Required(
                     CONF_MAX_PARALLEL_CALLS, default=default_max_parallel_calls

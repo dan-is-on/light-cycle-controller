@@ -20,6 +20,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
   - Optional long press / double press can jump straight to Off or a specific step
   - External light changes reconcile internal cycle position (nearest brightness step wins)
   - Multiple instances supported without collisions
+  - Existing entries can be renamed later from the **Configure** flow
 
 ## Guided setup (config flow)
 
@@ -31,9 +32,11 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
      - If you see intermittent failures or lag (especially Tuya throttling), reduce this value
 2. **Select Zigbee remote (ZHA)**
    - Pick the ZHA device (button/remote)
+   - The picker is filtered to likely remotes/buttons so you do not have to scroll past every Zigbee light and sensor
 3. **Check gesture support (first time per remote)**
    - If this remote has never been checked before, the wizard asks you to try a **Long press** and then a **Double press**
-   - Support is remembered per remote, so later entries on the same device skip these checks
+   - Support is remembered per remote, so later entries and normal edits on the same device skip these checks
+   - If the remembered support cache is missing, the integration rebuilds it from any existing entries that already captured long/double gestures for that remote
    - If a gesture is not supported, mark it as unsupported and continue
 4. **Capture button press**
    - Click **Submit**, then press the desired physical button once

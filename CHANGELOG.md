@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.21
+
+- Filter the ZHA device picker down to likely remotes/buttons by inspecting device automations, while still falling back safely if Home Assistant cannot provide that metadata.
+
+## 0.1.20
+
+- Add instance-name editing to the Configure flow, so existing Light Cycle Controller entries can be renamed without deleting and recreating them.
+- Reconstruct remembered long/double gesture support from existing entries on the same remote, preventing duplicate gesture-support checks during normal edits when support is already known.
+
 ## 0.1.19
 
 - Learn long-press and double-press support once per ZHA remote, cache that capability in integration settings, and skip repeating those support-check screens on later entries for the same device.

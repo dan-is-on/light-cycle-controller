@@ -13,7 +13,7 @@
       },
       "device": {
         "title": "ZHA remote",
-        "description": "Select the Zigbee button/remote device from the ZHA integration.",
+        "description": "Select the Zigbee button/remote device from the ZHA integration. The list is filtered to likely remotes/buttons to reduce clutter.",
         "data": {
           "device_id": "ZHA device"
         }
@@ -144,10 +144,11 @@
     "step": {
       "init": {
         "title": "Edit controller",
-        "description": "Update target lights, button device, brightness steps, and integration-wide parallel service calls. Recommended default is {default_max_parallel_calls}; lower it if you see Tuya/Zigbee throttling or intermittent apply failures.",
+        "description": "Update the instance name, target lights, button device, brightness steps, and integration-wide parallel service calls. Recommended default is {default_max_parallel_calls}; lower it if you see Tuya/Zigbee throttling or intermittent apply failures.",
         "data": {
+          "name": "Instance name",
           "target_entity_ids": "Target lights",
-          "remote_device_id": "ZHA device",
+          "remote_device_id": "ZHA remote/button",
           "recapture": "Recapture button press",
           "max_parallel_calls": "Parallel service calls (integration-wide)",
           "on_steps": "Number of On steps"

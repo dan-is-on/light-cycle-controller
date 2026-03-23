@@ -156,6 +156,61 @@ def _binding_target_index_from_storage(binding: Any, on_steps: int) -> int:
     return max(0, min(on_steps, target_index))
 
 
+def _entry_primary_signature(entry: ConfigEntry) -> _ZhaButtonSignature | None:
+    """Deserialize the main short-press signature stored on one config entry."""
+    ieee = _entry_value(entry, CONF_REMOTE_IEEE)
+    endpoint_id = _entry_value(entry, CONF_ENDPOINT_ID)
+    command = _entry_value(entry, CONF_COMMAND)
+    if not isinstance(ieee, str) or endpoint_id is None or command is None:
+        return None
+
+    try:
+        return _ZhaButtonSignature(
+            ieee=ieee,
+            endpoint_id=int(endpoint_id),
+            command=str(command),
+            cluster_id=_entry_value(entry, CONF_CLUSTER_ID),
+            args=list(_entry_value(entry, CONF_ARGS, []))
+            if _entry_value(entry, CONF_ARGS) is not None
+            else None,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _infer_device_gesture_binding_templates(
+    hass: HomeAssistant, ieee: str | None
+) -> dict[str, dict[str, Any]]:
+    """Infer reusable long/double templates from entries on the same remote."""
+    if not ieee:
+        return {}
+
+    templates: dict[str, dict[str, Any]] = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        main_signature = _entry_primary_signature(entry)
+        if main_signature is None or main_signature.ieee != ieee:
+            continue
+
+        for gesture, binding_key in GESTURE_BINDING_KEYS.items():
+            if gesture in templates:
+                continue
+
+            binding = _entry_value(entry, binding_key, None)
+            gesture_signature = _binding_signature_from_storage(ieee, binding)
+            if gesture_signature is None:
+                continue
+            if gesture_signature.endpoint_id != main_signature.endpoint_id:
+                continue
+
+            templates[gesture] = {
+                CONF_COMMAND: gesture_signature.command,
+                CONF_CLUSTER_ID: gesture_signature.cluster_id,
+                CONF_ARGS: gesture_signature.args,
+            }
+
+    return templates
+
+
 def _step_target_selector(
     steps: list[dict[str, Any]], *, include_none: bool = False
 ) -> selector.SelectSelector:
@@ -723,6 +778,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._selected_gesture_targets: dict[str, int] = {}
         self._pending_device_gesture_probes: list[str] = []
         self._current_device_gesture_probe: str | None = None
+        self._gesture_binding_templates: dict[str, dict[str, Any]] = {}
         self._enabled_gestures: list[str] = []
         self._pending_gesture_captures: list[str] = []
         self._current_gesture_capture: str | None = None
@@ -743,17 +799,30 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         support = await _async_load_known_device_gesture_support(
             self.hass, self._remote_ieee
         )
+        self._gesture_binding_templates = _infer_device_gesture_binding_templates(
+            self.hass, self._remote_ieee
+        )
         self._supported_device_gestures = [
             gesture
             for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
             if support.get(gesture) is True
         ]
+        LOGGER.debug(
+            "Loaded gesture support for remote %s: support=%s templates=%s",
+            self._remote_ieee,
+            support,
+            sorted(self._gesture_binding_templates),
+        )
         return support
 
-    def _prepare_optional_gesture_capture_queue(self, selected_gestures: list[str]) -> None:
+    def _prepare_optional_gesture_capture_queue(
+        self, selected_gestures: list[str], capture_gestures: list[str] | None = None
+    ) -> None:
         """Reset per-entry gesture capture state for the chosen actions."""
         self._enabled_gestures = list(selected_gestures)
-        self._pending_gesture_captures = list(selected_gestures)
+        self._pending_gesture_captures = list(
+            selected_gestures if capture_gestures is None else capture_gestures
+        )
         self._current_gesture_capture = None
 
         # Drop any disabled gesture bindings immediately so stale mappings are never saved.
@@ -767,6 +836,35 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
             for gesture, target_index in self._selected_gesture_targets.items()
             if gesture in self._enabled_gestures
         }
+
+    def _inferred_optional_gesture_binding(self, gesture: str) -> dict[str, Any] | None:
+        """Build a gesture binding from a previously learned remote template."""
+        if self._signature is None:
+            return None
+
+        template = self._gesture_binding_templates.get(gesture)
+        if not isinstance(template, dict):
+            return None
+
+        signature = _ZhaButtonSignature(
+            ieee=self._signature.ieee,
+            endpoint_id=self._signature.endpoint_id,
+            command=str(template.get(CONF_COMMAND)),
+            cluster_id=template.get(CONF_CLUSTER_ID),
+            args=list(template.get(CONF_ARGS, []))
+            if template.get(CONF_ARGS) is not None
+            else None,
+        )
+        if not signature.command or self._signature_in_use(signature):
+            return None
+
+        LOGGER.debug(
+            "Reusing learned %s template for remote %s endpoint %s",
+            gesture,
+            signature.ieee,
+            signature.endpoint_id,
+        )
+        return _signature_to_storage(signature, 0)
 
     async def _async_next_device_probe_or_capture(self):
         """Continue probing unknown device gesture support, then capture the main press."""
@@ -1293,6 +1391,7 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             selected_gestures: list[str] = []
             selected_targets: dict[str, int] = {}
+            capture_gestures: list[str] = []
 
             for gesture in supported_gestures:
                 raw_target = user_input.get(GESTURE_TARGET_KEYS[gesture], GESTURE_TARGET_NONE)
@@ -1308,10 +1407,25 @@ class LightCycleConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 selected_gestures.append(gesture)
                 selected_targets[gesture] = max(0, min(len(self._draft_steps), target_index))
+                inferred_binding = self._inferred_optional_gesture_binding(gesture)
+                if inferred_binding is None:
+                    capture_gestures.append(gesture)
+                else:
+                    self._gesture_bindings[gesture] = inferred_binding
 
             if not errors:
                 self._selected_gesture_targets = selected_targets
-                self._prepare_optional_gesture_capture_queue(selected_gestures)
+                self._prepare_optional_gesture_capture_queue(
+                    selected_gestures, capture_gestures
+                )
+                for gesture in selected_gestures:
+                    if gesture in capture_gestures:
+                        continue
+                    binding = dict(self._gesture_bindings.get(gesture, {}))
+                    binding[CONF_GESTURE_TARGET_INDEX] = self._selected_gesture_targets[
+                        gesture
+                    ]
+                    self._gesture_bindings[gesture] = binding
                 return await self._async_next_optional_gesture_step_or_finish()
 
         selector_field = _step_target_selector(self._draft_steps, include_none=True)
@@ -1450,6 +1564,7 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
         }
         self._pending_device_gesture_probes: list[str] = []
         self._current_device_gesture_probe: str | None = None
+        self._gesture_binding_templates: dict[str, dict[str, Any]] = {}
         self._enabled_gestures: list[str] = list(self._gesture_bindings)
         self._pending_gesture_captures: list[str] = []
         self._current_gesture_capture: str | None = None
@@ -1472,11 +1587,21 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             self._remote_ieee,
             extra_supported_gestures=tuple(self._gesture_bindings),
         )
+        self._gesture_binding_templates = _infer_device_gesture_binding_templates(
+            self.hass, self._remote_ieee
+        )
         self._supported_device_gestures = [
             gesture
             for gesture in (GESTURE_LONG_PRESS, GESTURE_DOUBLE_PRESS)
             if support.get(gesture) is True
         ]
+        LOGGER.debug(
+            "Loaded gesture support for remote %s while editing %s: support=%s templates=%s",
+            self._remote_ieee,
+            self._config_entry.entry_id,
+            support,
+            sorted(self._gesture_binding_templates),
+        )
         return support
 
     def _prepare_optional_gesture_capture_queue(
@@ -1496,6 +1621,36 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
             for gesture, target_index in self._selected_gesture_targets.items()
             if gesture in self._enabled_gestures
         }
+
+    def _inferred_optional_gesture_binding(self, gesture: str) -> dict[str, Any] | None:
+        """Build a gesture binding from a previously learned remote template."""
+        if self._signature is None:
+            return None
+
+        template = self._gesture_binding_templates.get(gesture)
+        if not isinstance(template, dict):
+            return None
+
+        signature = _ZhaButtonSignature(
+            ieee=self._signature.ieee,
+            endpoint_id=self._signature.endpoint_id,
+            command=str(template.get(CONF_COMMAND)),
+            cluster_id=template.get(CONF_CLUSTER_ID),
+            args=list(template.get(CONF_ARGS, []))
+            if template.get(CONF_ARGS) is not None
+            else None,
+        )
+        if not signature.command or self._signature_in_use(signature):
+            return None
+
+        LOGGER.debug(
+            "Reusing learned %s template for remote %s endpoint %s while editing entry %s",
+            gesture,
+            signature.ieee,
+            signature.endpoint_id,
+            self._config_entry.entry_id,
+        )
+        return _signature_to_storage(signature, 0)
 
     async def _async_next_device_probe_or_continue(self):
         """Continue probing support for the selected device, then resume options flow."""
@@ -2046,8 +2201,16 @@ class LightCycleOptionsFlowHandler(OptionsFlow):
                 selected_gestures.append(gesture)
                 selected_targets[gesture] = max(0, min(len(self._draft_steps), target_index))
                 binding = self._gesture_bindings.get(gesture)
-                if binding is None or user_input.get(GESTURE_RECAPTURE_KEYS[gesture]):
+                if user_input.get(GESTURE_RECAPTURE_KEYS[gesture]):
                     recapture_gestures.append(gesture)
+                    continue
+
+                if binding is None:
+                    inferred_binding = self._inferred_optional_gesture_binding(gesture)
+                    if inferred_binding is not None:
+                        self._gesture_bindings[gesture] = inferred_binding
+                    else:
+                        recapture_gestures.append(gesture)
 
             if not errors:
                 self._selected_gesture_targets = selected_targets

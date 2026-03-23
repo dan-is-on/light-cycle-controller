@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.23
+
+- Reuse learned long-press and double-press command templates across buttons on the same remote, so after the first captured button you usually do not have to re-capture those gestures for every other button on that controller.
+
 ## 0.1.22
 
 - Fix a Configure-flow 500 caused by some device registry identifiers not being simple 2-tuples while building the filtered ZHA remote picker.

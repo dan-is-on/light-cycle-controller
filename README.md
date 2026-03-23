@@ -54,7 +54,7 @@ Wizard-led Home Assistant custom integration that lets a **ZHA Zigbee button** c
      - **Do nothing**
      - jump to **Off**
      - jump to any configured step
-   - If you choose an action for long press or double press, the wizard then captures that gesture for the selected button on this entry
+   - On the first button for a remote, the wizard captures the chosen gesture(s); later buttons on that same remote reuse the learned long/double command pattern where possible, so you usually do not need to re-capture those gestures every time
 
 ## How cycling + sync works
 
